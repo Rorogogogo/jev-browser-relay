@@ -1,0 +1,34 @@
+{
+  "start": "form",
+  "pages": {
+    "form": {
+      "url": "https://fixture.test/signup",
+      "title": "Create your account",
+      "text": "Create your account. All fields are required.",
+      "elements": [
+        {"key": "first_name", "label": "First name", "kind": "fill", "role": "textbox"},
+        {"key": "last_name", "label": "Last name", "kind": "fill", "role": "textbox"},
+        {"key": "email", "label": "Work email", "kind": "fill", "role": "textbox"},
+        {"key": "company", "label": "Company", "kind": "fill", "role": "textbox"},
+        {"key": "phone", "label": "Phone number", "kind": "fill", "role": "textbox"},
+        {"key": "city", "label": "City", "kind": "fill", "role": "textbox"},
+        {"key": "country", "label": "Country", "kind": "select", "role": "combobox",
+         "options": [{"label": "Australia", "value": "AU"}, {"label": "Japan", "value": "JP"},
+                     {"label": "United States", "value": "US"}]},
+        {"key": "referrer", "label": "How did you hear about us?", "kind": "fill", "role": "textbox"},
+        {"key": "submit", "label": "Create account", "kind": "click", "role": "button"}
+      ],
+      "transitions": {"submit": "welcome"}
+    },
+    "welcome": {
+      "url": "https://fixture.test/signup/welcome",
+      "title": "Welcome",
+      "text": "Account created.",
+      "elements": [{"key": "dashboard", "label": "Go to dashboard", "kind": "click", "role": "link"}],
+      "reveal_text": {
+        "requires": ["first_name", "email"],
+        "text": "Welcome {first_name} {last_name}. We sent a confirmation to {email} at {company} in {city}, {country}."
+      }
+    }
+  }
+}

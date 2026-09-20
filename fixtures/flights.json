@@ -1,0 +1,33 @@
+{
+  "start": "search",
+  "pages": {
+    "search": {
+      "url": "https://fixture.test/flights",
+      "title": "Flight search",
+      "text": "Search flights. Choose a ticket type, an origin, a destination and a departure date.",
+      "elements": [
+        {"key": "trip_type", "label": "Ticket type", "kind": "select", "role": "combobox",
+         "options": [{"label": "Round trip", "value": "round"}, {"label": "One way", "value": "oneway"}]},
+        {"key": "origin", "label": "Where from?", "kind": "fill", "role": "combobox"},
+        {"key": "destination", "label": "Where to?", "kind": "fill", "role": "combobox"},
+        {"key": "departure", "label": "Departure", "kind": "fill", "role": "textbox"},
+        {"key": "search_btn", "label": "Search", "kind": "click", "role": "button"}
+      ],
+      "transitions": {"search_btn": "results"}
+    },
+    "results": {
+      "url": "https://fixture.test/flights/results",
+      "title": "Flight results",
+      "text": "Departing flights",
+      "elements": [
+        {"key": "flight_1", "label": "07:05 Qantas nonstop 9 hr 50 min", "kind": "click", "role": "link"},
+        {"key": "flight_2", "label": "13:40 ANA nonstop 9 hr 35 min", "kind": "click", "role": "link"}
+      ],
+      "reveal_text": {
+        "requires": ["origin", "destination", "departure"],
+        "text": "{trip_type} · {origin} to {destination} · {departure} · 2 results"
+      },
+      "scrollable": true
+    }
+  }
+}

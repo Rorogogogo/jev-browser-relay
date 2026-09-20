@@ -1,0 +1,23 @@
+{
+  "start": "list",
+  "pages": {
+    "list": {
+      "url": "https://fixture.test/invoices",
+      "title": "Invoices",
+      "text": "Three invoices are outstanding. Each is for the same amount and the same customer.",
+      "elements": [
+        {"key": "invoice_a", "label": "Invoice 1041 · Acme · $420.00 · overdue", "kind": "click", "role": "link"},
+        {"key": "invoice_b", "label": "Invoice 1042 · Acme · $420.00 · overdue", "kind": "click", "role": "link"},
+        {"key": "invoice_c", "label": "Invoice 1043 · Acme · $420.00 · overdue", "kind": "click", "role": "link"}
+      ],
+      "transitions": {"invoice_a": "detail", "invoice_b": "detail", "invoice_c": "detail"}
+    },
+    "detail": {
+      "url": "https://fixture.test/invoices/detail",
+      "title": "Invoice detail",
+      "text": "Invoice detail for Acme, $420.00, overdue.",
+      "elements": [{"key": "back", "label": "Back to invoices", "kind": "click", "role": "link"}],
+      "transitions": {"back": "list"}
+    }
+  }
+}

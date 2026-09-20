@@ -1,0 +1,55 @@
+{
+  "start": "home",
+  "pages": {
+    "home": {
+      "url": "https://fixture.test/docs",
+      "title": "Documentation",
+      "text": "Welcome to the documentation.",
+      "elements": [
+        {"key": "guides", "label": "Guides", "kind": "click", "role": "link"},
+        {"key": "reference", "label": "API reference", "kind": "click", "role": "link"},
+        {"key": "blog", "label": "Blog", "kind": "click", "role": "link"}
+      ],
+      "transitions": {"guides": "guides", "reference": "reference"}
+    },
+    "guides": {
+      "url": "https://fixture.test/docs/guides",
+      "title": "Guides",
+      "text": "Guides index.",
+      "elements": [
+        {"key": "getting_started", "label": "Getting started", "kind": "click", "role": "link"},
+        {"key": "deployment", "label": "Deployment", "kind": "click", "role": "link"},
+        {"key": "auth", "label": "Authentication", "kind": "click", "role": "link"}
+      ],
+      "transitions": {"auth": "auth", "deployment": "deployment", "getting_started": "getting_started"}
+    },
+    "getting_started": {
+      "url": "https://fixture.test/docs/guides/getting-started",
+      "title": "Getting started",
+      "text": "Install the package and run it.",
+      "elements": [{"key": "next", "label": "Next: Deployment", "kind": "click", "role": "link"}],
+      "transitions": {"next": "deployment"}
+    },
+    "deployment": {
+      "url": "https://fixture.test/docs/guides/deployment",
+      "title": "Deployment",
+      "text": "Deploy to production.",
+      "elements": [{"key": "next", "label": "Next: Authentication", "kind": "click", "role": "link"}],
+      "transitions": {"next": "auth"}
+    },
+    "auth": {
+      "url": "https://fixture.test/docs/guides/authentication",
+      "title": "Authentication",
+      "text": "Rotating an API token: open settings, choose Rotate token, and copy the new value. Tokens expire after 90 days.",
+      "elements": [{"key": "back_to_guides", "label": "Back to guides", "kind": "click", "role": "link"}],
+      "transitions": {"back_to_guides": "guides"}
+    },
+    "reference": {
+      "url": "https://fixture.test/docs/reference",
+      "title": "API reference",
+      "text": "Endpoints.",
+      "elements": [{"key": "home", "label": "Home", "kind": "click", "role": "link"}],
+      "transitions": {"home": "home"}
+    }
+  }
+}

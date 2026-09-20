@@ -1,0 +1,19 @@
+[package]
+name = "jev-browser-relay-jev"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "TypeSafe Jev transport for jev-browser-relay. The only external model API the runtime requires."
+
+[dependencies]
+jev-browser-relay-core.workspace = true
+async-trait.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }

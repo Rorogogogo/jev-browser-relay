@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/jev-browser-relay-core",
+    "crates/jev-browser-relay-jev",
+    "crates/jev-browser-relay-browser",
+    "crates/jev-browser-relay-mcp",
+    "crates/jev-browser-relay-cli",
+    "tests",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+repository = "https://github.com/browser-use/jev-browser-relay"
+description = "A high-speed browser runtime for AI coding agents: Jev drives the browser loop, the host model intervenes only when it must."
+
+[workspace.dependencies]
+jev-browser-relay-core = { path = "crates/jev-browser-relay-core", version = "0.1.0" }
+jev-browser-relay-jev = { path = "crates/jev-browser-relay-jev", version = "0.1.0" }
+jev-browser-relay-browser = { path = "crates/jev-browser-relay-browser", version = "0.1.0" }
+jev-browser-relay-mcp = { path = "crates/jev-browser-relay-mcp", version = "0.1.0" }
+
+anyhow = "1"
+async-trait = "0.1"
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "time", "sync", "process"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"

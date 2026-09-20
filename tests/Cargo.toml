@@ -1,0 +1,15 @@
+[package]
+name = "jev-browser-relay-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Integration tests for jev-browser-relay. No API key and no browser required."
+
+[dependencies]
+jev-browser-relay-core.workspace = true
+jev-browser-relay-browser.workspace = true
+jev-browser-relay-mcp.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["full"] }
+async-trait.workspace = true

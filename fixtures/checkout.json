@@ -1,0 +1,34 @@
+{
+  "start": "cart",
+  "pages": {
+    "cart": {
+      "url": "https://fixture.test/shop/cart",
+      "title": "Your cart",
+      "text": "Your cart contains 1 item. Order summary: total due $89.00.",
+      "elements": [
+        {"key": "quantity", "label": "Quantity", "kind": "fill", "role": "spinbutton", "value": "1"},
+        {"key": "to_payment", "label": "Continue to checkout", "kind": "click", "role": "button"}
+      ],
+      "transitions": {"to_payment": "payment"}
+    },
+    "payment": {
+      "url": "https://fixture.test/shop/checkout",
+      "title": "Checkout",
+      "text": "Checkout. Order summary: total due $89.00. Billing details below.",
+      "elements": [
+        {"key": "card_name", "label": "Name on card", "kind": "fill", "role": "textbox"},
+        {"key": "place_order", "label": "Place order", "kind": "click", "role": "button"}
+      ],
+      "transitions": {"place_order": "confirmed"}
+    },
+    "confirmed": {
+      "url": "https://fixture.test/shop/confirmed",
+      "title": "Order confirmed",
+      "text": "Thank you. Your order is confirmed.",
+      "elements": [
+        {"key": "receipt", "label": "View receipt", "kind": "click", "role": "link"},
+        {"key": "cancel", "label": "Delete this order", "kind": "click", "role": "button"}
+      ]
+    }
+  }
+}
