@@ -129,7 +129,9 @@ visual — the normal loop needs no pixels and screenshots are slow.
 - ❌ A vague goal like "search for flights". The policy model cannot tell when to stop.
 - ❌ Reporting success when `host_verification_required` is true.
 - ❌ Approving a `needs_confirmation` on the user's behalf without asking.
-- ❌ Starting a new session because a task paused. Resume the one you have.
+- ❌ Starting a new session because a task paused. Resume the one you have. (Starting the same
+  url and goal again returns the live session with `reused: true` rather than opening a second
+  tab — but rely on `session_id`, not on that safety net.)
 
 ## When not to use this
 

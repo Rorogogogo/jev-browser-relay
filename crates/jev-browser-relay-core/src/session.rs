@@ -167,6 +167,9 @@ pub struct Session {
     pub goal: String,
     pub initial_url: String,
     pub status: SessionStatus,
+    /// Identifies the *task*, not the session: same goal on the same page is the same job.
+    /// Used to reuse a live session instead of opening a second tab for it.
+    pub fingerprint: String,
 
     pub value_pool: ValuePool,
     pub metrics: Metrics,
@@ -232,8 +235,10 @@ impl Session {
             "session started"
         );
 
+        let fingerprint = task_fingerprint(&initial_url, &goal);
         Ok(Self {
             id,
+            fingerprint,
             goal,
             initial_url,
             status: SessionStatus::Ready,
@@ -902,4 +907,16 @@ impl RawAction {
 
 fn new_request_id() -> String {
     format!("req_{}", uuid::Uuid::new_v4().simple())
+}
+
+/// A stable identity for "the same task": the starting page plus the goal.
+///
+/// Deliberately coarse. Its job is to catch an agent that starts a task it already has open —
+/// which is the common failure, because a paused session looks to a confused agent like a
+/// reason to begin again. Exact-match on normalized text is enough for that and cannot
+/// accidentally merge two genuinely different jobs.
+pub fn task_fingerprint(url: &str, goal: &str) -> String {
+    let url = url.trim().trim_end_matches('/').to_lowercase();
+    let goal = goal.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    format!("{url}\u{1}{goal}")
 }

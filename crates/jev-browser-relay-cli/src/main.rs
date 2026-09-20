@@ -5,6 +5,7 @@
 
 mod benchmark;
 mod doctor;
+mod setup;
 mod telemetry;
 
 use anyhow::{Context, Result};
@@ -118,6 +119,17 @@ enum Command {
         json_out: Option<String>,
     },
 
+    /// Install and wire up everything needed, in one command.
+    Setup {
+        /// Install Browser Harness without asking first.
+        #[arg(long)]
+        yes: bool,
+
+        /// Skip registering the MCP server with Claude Code and Codex.
+        #[arg(long)]
+        no_register: bool,
+    },
+
     /// Check the API key, the browser runtime, and the Chrome connection.
     Doctor,
 }
@@ -147,6 +159,7 @@ async fn main() -> Result<()> {
         Command::Benchmark { trials, scenario, host_turn_ms, jev_ms, live, json_out } => {
             run_benchmark(trials, scenario, host_turn_ms, jev_ms, live, json_out).await
         }
+        Command::Setup { yes, no_register } => setup::run_setup(yes, !no_register).await,
         Command::Doctor => {
             let checks = doctor::run().await;
             let ok = doctor::print(&checks);

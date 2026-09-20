@@ -9,10 +9,15 @@
 
 pub mod harness;
 pub mod harness_backend;
+pub mod provision;
 pub mod scripted;
+pub mod state;
 
 pub use harness::HarnessIpc;
 pub use harness_backend::HarnessBackend;
+pub use provision::{
+    ensure, ensure_daemon, install_plan, is_harness_installed, reclaim_orphaned_tabs, ProvisionOutcome,
+};
 pub use scripted::{ExecutedAction, Fixture, ScriptedBackend};
 
 /// Default viewport for a relay session, matching jev-ultrafast's.

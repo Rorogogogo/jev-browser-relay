@@ -39,14 +39,34 @@ pub struct HarnessBackend {
 
 impl HarnessBackend {
     /// Open a background tab at `url` and wait for it to finish loading.
+    ///
+    /// `idle` says whether this runtime holds no other session; it lets the provisioning step
+    /// decide whether an out-of-date Browser Harness may be upgraded. Pass `false` whenever a
+    /// browser task is already in flight.
     pub async fn connect(url: &str, viewport: (u32, u32)) -> Result<Self> {
+        Self::connect_with(url, viewport, false).await
+    }
+
+    pub async fn connect_with(url: &str, viewport: (u32, u32), idle: bool) -> Result<Self> {
+        // Reuse a running daemon, start one if absent, upgrade it only while nothing is using
+        // it. Starting something the user already installed is expected; installing software is
+        // not, and only ever happens from `jev-browser-relay setup`.
+        let outcome = crate::provision::ensure(Duration::from_secs(90), idle).await?;
+        debug!(provision = outcome.as_str(), "browser layer ready");
+
         let ipc = HarnessIpc::new();
         if !ipc.is_available().await {
             return Err(RelayError::BrowserDisconnected(
-                "the Browser Harness daemon is not running. Start it with `browser-harness --doctor`, \
-                 then re-run. See `jev-browser-relay doctor`."
+                "the Browser Harness daemon started but is not answering. Run \
+                 `jev-browser-relay doctor` for the diagnosis."
                     .into(),
             ));
+        }
+
+        // Close tabs left behind by runs that died before they could. Only ever touches tabs
+        // whose owning process is gone, and never blocks startup if it fails.
+        if idle {
+            crate::provision::reclaim_orphaned_tabs().await;
         }
 
         let created =
@@ -64,6 +84,10 @@ impl HarnessBackend {
             .and_then(Value::as_str)
             .ok_or_else(|| RelayError::Browser("Target.attachToTarget returned no sessionId".into()))?
             .to_string();
+
+        // Record ownership before configuring the tab: if this process dies during setup, the
+        // tab is already attributable and a later run can reclaim it.
+        crate::state::record_target(&target_id, url);
 
         let backend = Self {
             ipc,
@@ -305,6 +329,10 @@ impl BrowserBackend for HarnessBackend {
         if let Err(error) = self.ipc.cdp("Target.closeTarget", None, json!({ "targetId": target })).await {
             warn!(error = %error, "could not close the browser target");
         }
+        // Dropped from the ownership record either way: a tab we failed to close is almost
+        // always one Chrome closed first, and keeping the entry would make a later run try
+        // forever to reclaim something that no longer exists.
+        crate::state::forget_target(&target);
         Ok(())
     }
 

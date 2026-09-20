@@ -578,6 +578,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "jev-browser-relay-core",
+ "libc",
  "serde",
  "serde_json",
  "tokio",

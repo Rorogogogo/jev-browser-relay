@@ -35,6 +35,39 @@ impl SessionRegistry {
         self.sessions.lock().await.remove(id).ok_or_else(|| RelayError::UnknownSession(id.to_string()))
     }
 
+    /// A live session already working on this task, if there is one.
+    ///
+    /// Terminal sessions are skipped: a finished or failed task is not one to resume, and
+    /// handing it back would look like the new request silently did nothing. A session that is
+    /// mid-call is skipped too — `try_lock` failing means somebody is using it right now, and
+    /// waiting on it would turn a cheap lookup into a stall.
+    pub async fn find_live_by_fingerprint(&self, fingerprint: &str) -> Option<(String, Arc<Mutex<Session>>)> {
+        let candidates: Vec<(String, Arc<Mutex<Session>>)> =
+            self.sessions.lock().await.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        for (id, handle) in candidates {
+            let Ok(session) = handle.try_lock() else { continue };
+            if session.fingerprint == fingerprint && !session.status.is_terminal() {
+                drop(session);
+                return Some((id, handle));
+            }
+        }
+        None
+    }
+
+    /// True when no session is holding a browser. Gates anything that would disrupt one.
+    pub async fn is_idle(&self) -> bool {
+        let candidates: Vec<Arc<Mutex<Session>>> = self.sessions.lock().await.values().cloned().collect();
+        for handle in candidates {
+            match handle.try_lock() {
+                // Mid-call, so certainly not idle.
+                Err(_) => return false,
+                Ok(session) if !session.status.is_terminal() => return false,
+                Ok(_) => {}
+            }
+        }
+        true
+    }
+
     pub async fn ids(&self) -> Vec<String> {
         self.sessions.lock().await.keys().cloned().collect()
     }

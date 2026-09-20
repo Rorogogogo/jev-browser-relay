@@ -67,35 +67,28 @@ cargo run -- benchmark --trials 5
 ```bash
 cargo install --path crates/jev-browser-relay-cli
 export TYPESAFE_API_KEY=...          # the only key you need
+
+jev-browser-relay setup
 ```
 
-The browser layer is [Browser Harness](https://github.com/browser-use/browser-harness), which
-owns the CDP connection to your real Chrome:
+`setup` does the rest in one go: installs
+[Browser Harness](https://github.com/browser-use/browser-harness) if it is missing (asking
+first — it is the only command here that installs anything), starts the daemon, attaches to
+Chrome, closes any tabs left behind by earlier runs, and registers the MCP server with Claude
+Code and Codex. It is idempotent, so running it again just reports the state.
+
+There is exactly **one step nothing can automate**: Chrome asks you once, in its own UI, to allow
+remote debugging. `setup` opens `chrome://inspect/#remote-debugging` and tells you to tick the
+box. That is a consent gesture, and it should stay one.
 
 ```bash
-uv tool install browser-harness
-browser-harness --doctor             # then tick the box on chrome://inspect/#remote-debugging
+jev-browser-relay setup --yes          # non-interactive: install without prompting
+jev-browser-relay setup --no-register  # skip touching your agent config
+jev-browser-relay doctor               # check without changing anything
 ```
 
-Check everything:
-
-```bash
-jev-browser-relay doctor
-```
-
-Connect it to your agent:
-
-```bash
-# Claude Code
-claude mcp add jev-browser-relay -- jev-browser-relay mcp
-```
-
-```toml
-# Codex — ~/.codex/config.toml
-[mcp_servers.jev-browser-relay]
-command = "jev-browser-relay"
-args = ["mcp"]
-```
+You never need to start the daemon by hand. Any session that finds it down starts it, so
+`setup` is a convenience and a diagnostic, not a prerequisite.
 
 Optionally install the skill that teaches the host to use it well — copy
 `skills/claude-code/jev-browser-relay/` into `~/.claude/skills/`, or append
@@ -146,6 +139,7 @@ Seven stateful tools built around a **task session**, not around clicks. There i
 ### CLI
 
 ```bash
+jev-browser-relay setup                        # install and wire up everything
 jev-browser-relay mcp                          # what your agent launches
 jev-browser-relay run --url … --goal … --context '{…}'
 jev-browser-relay inspect --fixture flights    # what the runtime sees on a page
@@ -227,6 +221,43 @@ rendered as "10 Oct 2026"), did navigation progress, is there an error state? Wh
 cannot settle it, the session still reports `done` but sets `host_verification_required` and
 hands back the page, so the host looks before anyone claims success.
 
+### One task, one session, one tab
+
+Two things duplicate in a runtime like this, and both are handled the same way: reuse what
+exists, and only ever create when nothing is there.
+
+**Sessions.** `jev_browser_start` with a url and goal already open returns the *live* session,
+with `reused: true`, instead of opening a second tab. This is aimed at a specific failure: an
+agent hits `needs_input`, gets confused, and starts the task over — stranding the paused session
+and its browser tab. Reuse turns that into a resume. A finished task is never reused (starting
+again should start again), genuinely different tasks are never merged, and `force_new: true`
+opts out.
+
+**The browser layer.** One `ensure` path decides between reusing a running daemon, starting one,
+and upgrading it — guarded by a process-wide lock, because two sessions starting together
+otherwise both see "nothing running" and both spawn.
+
+**Stray tabs.** Every tab is recorded with the pid that opened it. A runtime that is killed
+cannot close its own tabs, so the next run closes them: owner gone means the tab is a leak. Tabs
+belonging to a live process are never touched. That record is written under a file lock with
+per-process temp files — two runtimes starting at once genuinely do race here, and an earlier
+version of it corrupted the file.
+
+### Auto-update, gated on idle
+
+An out-of-date Browser Harness is upgraded automatically, but **only while no session is
+running**, and at most once a day.
+
+The reasoning is borrowed from NoMoreIDE's daemon lifecycle: upgrading restarts the daemon, which
+drops its CDP connection and every tab being driven through it. Upgrading on sight would mean an
+agent that happened to start a session silently killing a browser task in flight — possibly
+someone else's, since the daemon is machine-global and shared with other Browser Use tools. Idle
+is the one moment where that objection disappears: nothing is lost, and the upgrade costs a
+second nobody notices.
+
+A failed or slow upgrade is never fatal. The version already installed still works, and refusing
+to run because an optional upgrade did not happen is worse than being one version behind.
+
 ### Secrets
 
 Keys that look sensitive are flagged on arrival. Their values are never logged, never placed in a
@@ -269,7 +300,7 @@ the page*; porting it to Rust would still mean shipping a script to the document
 cargo test
 ```
 
-52 tests. **No API key, no browser, no network.** The Jev double reads the real request body and
+64 tests. **No API key, no browser, no network.** The Jev double reads the real request body and
 answers over the actual offered choice space, so request construction and response validation are
 exercised for real. Live TypeSafe usage is opt-in and separate: `benchmark --live`.
 

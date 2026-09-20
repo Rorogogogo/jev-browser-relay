@@ -9,7 +9,7 @@ use jev_browser_relay_core::config::RuntimeConfig;
 use jev_browser_relay_core::error::{RelayError, Result};
 use jev_browser_relay_core::jev::JevTransport;
 use jev_browser_relay_core::registry::{new_session_id, SessionRegistry};
-use jev_browser_relay_core::session::{RunBudget, RunOutcome, Session};
+use jev_browser_relay_core::session::{task_fingerprint, RunBudget, RunOutcome, Session};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -19,7 +19,10 @@ use tracing::{debug, info, warn};
 /// backend in tests, with no Chrome anywhere.
 #[async_trait]
 pub trait BackendFactory: Send + Sync {
-    async fn create(&self, url: &str) -> Result<Box<dyn BrowserBackend>>;
+    /// `idle` says nothing else in this runtime holds a browser, which is what lets the
+    /// implementation do disruptive work — upgrading the browser layer, reclaiming stray tabs —
+    /// at the only moment it costs nobody anything.
+    async fn create(&self, url: &str, idle: bool) -> Result<Box<dyn BrowserBackend>>;
     fn describe(&self) -> String;
 }
 
@@ -31,7 +34,7 @@ pub struct ScriptedFactory {
 
 #[async_trait]
 impl BackendFactory for ScriptedFactory {
-    async fn create(&self, _url: &str) -> Result<Box<dyn BrowserBackend>> {
+    async fn create(&self, _url: &str, _idle: bool) -> Result<Box<dyn BrowserBackend>> {
         Ok(Box::new(jev_browser_relay_browser::ScriptedBackend::from_json(&self.fixture)?))
     }
 
@@ -53,8 +56,8 @@ impl Default for HarnessFactory {
 
 #[async_trait]
 impl BackendFactory for HarnessFactory {
-    async fn create(&self, url: &str) -> Result<Box<dyn BrowserBackend>> {
-        Ok(Box::new(HarnessBackend::connect(url, self.viewport).await?))
+    async fn create(&self, url: &str, idle: bool) -> Result<Box<dyn BrowserBackend>> {
+        Ok(Box::new(HarnessBackend::connect_with(url, self.viewport, idle).await?))
     }
 
     fn describe(&self) -> String {
@@ -205,8 +208,31 @@ impl RelayServer {
         let url = required_str(arguments, "url")?;
         let goal = required_str(arguments, "goal")?;
         let context = arguments.get("context").cloned().filter(|c| c.is_object());
+        let force_new = arguments.get("force_new").and_then(Value::as_bool).unwrap_or(false);
 
-        let backend = self.factory.create(&url).await?;
+        // Starting a task this runtime is already working on is nearly always an agent that
+        // forgot it had a session — the paused-then-restarted pattern. Handing back the live
+        // session resumes the work instead of abandoning it behind a second Chrome tab.
+        if !force_new {
+            let fingerprint = task_fingerprint(&url, &goal);
+            if let Some((existing_id, handle)) = self.registry.find_live_by_fingerprint(&fingerprint).await {
+                let session = handle.lock().await;
+                info!(session = %existing_id, "reusing the live session for this task");
+                return Ok(json!({
+                    "session_id": existing_id,
+                    "status": session.status.as_str(),
+                    "url": session.current_url(),
+                    "reused": true,
+                    "next": "This task was already open, so it was resumed rather than restarted. \
+                             Answer any pending request, then call jev_browser_run. \
+                             Pass force_new if you truly need a second independent session."
+                }));
+            }
+        }
+
+        // Only while nothing else is running may provisioning do disruptive work.
+        let idle = self.registry.is_idle().await;
+        let backend = self.factory.create(&url, idle).await?;
         let id = new_session_id();
         let session =
             Session::start(id.clone(), goal, context, self.jev.clone(), backend, self.config.clone()).await?;
@@ -218,6 +244,7 @@ impl RelayServer {
             "session_id": id,
             "status": "ready",
             "url": url,
+            "reused": false,
             "context_keys": known,
             "next": "Call jev_browser_run. One call will execute many browser actions."
         }))

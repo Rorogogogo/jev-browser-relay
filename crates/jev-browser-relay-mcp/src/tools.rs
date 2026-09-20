@@ -39,6 +39,14 @@ pub fn definitions() -> Vec<Value> {
                                         flattened. Keys are matched to page fields semantically, so \
                                         \"origin\" fills \"Where from?\".",
                         "additionalProperties": true
+                    },
+                    "force_new": {
+                        "type": "boolean",
+                        "description": "Open a second independent session even if this exact task is \
+                                        already open. Off by default: starting the same url and goal \
+                                        twice returns the live session with reused:true, so a paused \
+                                        task resumes instead of being abandoned behind a stray tab.",
+                        "default": false
                     }
                 },
                 "required": ["url", "goal"],
