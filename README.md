@@ -307,8 +307,23 @@ exercised for real. Live TypeSafe usage is opt-in and separate: `benchmark --liv
 Coverage includes session lifecycle, request construction, response parsing, operation
 compatibility, target filtering, value resolution, alias lookup, all three pause/resume paths,
 stale-element protection, DONE verification, retry budgets, timeouts, browser disconnect,
-malformed and failing Jev responses, multiple sessions, metrics, secret redaction, and the MCP
-surface end to end.
+malformed and failing Jev responses, multiple sessions, metrics, secret redaction, task
+de-duplication, tab-ownership reclamation, concurrent state writes, and the MCP surface end to
+end.
+
+### What has been exercised against the real thing
+
+The browser layer has run against real Chrome: `jev-browser-relay setup` installs and starts the
+Browser Harness daemon, the Rust IPC client drives it over its Unix socket, and
+`jev-browser-relay inspect --url …` opens a background tab, injects the snapshot script, and
+returns the element table — with the tab closed and its ownership record cleared afterwards. No
+API key is needed for any of that, so you can verify it yourself in one command.
+
+**Not yet exercised: decision quality against the live TypeSafe API.** The transport is confirmed
+— a request to `api.typesafe.ai` returns a well-formed `401` without a key, so the URL, auth
+scheme and body shape are accepted — but how well Jev actually chooses on real pages is not
+something the scripted tests can tell you. Set `TYPESAFE_API_KEY` and run
+`jev-browser-relay run --url … --goal …` to find out.
 
 ---
 

@@ -122,16 +122,21 @@ pub struct RawAction {
 }
 
 impl RawAction {
-    /// The label with any `parent → option` suffix removed.
-    pub fn element_label(&self) -> &str {
-        self.label.split(" → ").next().unwrap_or(&self.label)
+    /// The label with any `parent → option` suffix removed, on one line.
+    pub fn element_label(&self) -> String {
+        collapse_whitespace(self.label.split(" → ").next().unwrap_or(&self.label))
+    }
+
+    /// The full label, including any option suffix, on one line.
+    pub fn display_label(&self) -> String {
+        collapse_whitespace(&self.label)
     }
 
     /// A best-effort placeholder/label pair for value resolution and host prompts.
     pub fn describe(&self) -> FieldDescription {
         FieldDescription {
             element_index: None,
-            label: self.element_label().to_string(),
+            label: self.element_label(),
             role: self.role.clone(),
             current_value: self.value.clone().filter(|v| !v.is_empty()),
         }
@@ -148,6 +153,13 @@ pub struct FieldDescription {
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_value: Option<String>,
+}
+
+/// Fold every run of whitespace — including the newlines real accessible names are full of —
+/// into single spaces. An unflattened label costs tokens in every Jev request, matches worse,
+/// and makes any table of elements unreadable.
+pub fn collapse_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

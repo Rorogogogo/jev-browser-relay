@@ -129,6 +129,34 @@ impl JevTransport for TypeSafeClient {
 }
 
 /// Exponential backoff: 250 ms, 500 ms, 1 s.
+/// Stands in for the Jev client when `TYPESAFE_API_KEY` is absent.
+///
+/// The MCP server must still start without a key. Exiting at launch instead makes every host
+/// agent show the server as failed — "CONNECTION_CLOSED", with nothing saying why — and the
+/// person has no way to discover that one environment variable is all that is missing. So the
+/// server comes up, lists its tools, and explains itself the moment a task actually needs a
+/// decision.
+pub struct UnconfiguredJev {
+    reason: String,
+}
+
+impl UnconfiguredJev {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self { reason: reason.into() }
+    }
+}
+
+#[async_trait::async_trait]
+impl JevTransport for UnconfiguredJev {
+    async fn post(&self, _request: &JevRequest) -> Result<JevRawResponse> {
+        Err(RelayError::Config(self.reason.clone()))
+    }
+
+    fn describe(&self) -> String {
+        "unconfigured (no TYPESAFE_API_KEY)".into()
+    }
+}
+
 async fn backoff(attempt: u32) {
     tokio::time::sleep(Duration::from_millis(250 * 2u64.pow(attempt.min(3)))).await;
 }

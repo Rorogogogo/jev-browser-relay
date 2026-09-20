@@ -140,7 +140,7 @@ pub fn build_request(
         for (index, action_id) in targets {
             let Some(action) = snapshot.action(action_id) else { continue };
             let mut entry = Map::new();
-            entry.insert("element".into(), json!(format!("[{index}] {}", action.label)));
+            entry.insert("element".into(), json!(format!("[{index}] {}", action.display_label())));
             let current = action.current_value.clone().or_else(|| action.value.clone()).unwrap_or_default();
             entry.insert("current_value".into(), json!(current));
             if let Some(role) = &action.role {

@@ -603,7 +603,7 @@ impl Session {
         // that we executed.
         self.record_action(
             decision,
-            action.element_label(),
+            &action.element_label(),
             resolution.as_ref(),
             Some(action.kind),
             started,
@@ -719,7 +719,7 @@ impl Session {
                 let action = snapshot.action(action_id)?;
                 Some(CandidateAction {
                     index: index.clone(),
-                    label: action.label.clone(),
+                    label: action.display_label(),
                     operation: decision.operation.as_str().to_string(),
                     probability: *probability,
                 })

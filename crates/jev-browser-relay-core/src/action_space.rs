@@ -79,7 +79,7 @@ impl ActionSpace {
                     indices.insert(node, index.clone());
                     space.elements.push(Element {
                         index: index.clone(),
-                        label: action.element_label().to_string(),
+                        label: action.element_label(),
                         role: action.role.clone(),
                         value: if action.kind == ActionKind::Select {
                             Some(action.current_value.clone().unwrap_or_default())
@@ -110,7 +110,7 @@ impl ActionSpace {
                 let target = format!("{index}:{}", options.len() + 1);
                 options.push(SelectOption {
                     index: target.clone(),
-                    label: action.label.clone(),
+                    label: action.display_label(),
                     value: action.value.clone().unwrap_or_default(),
                 });
                 target

@@ -159,7 +159,14 @@ async fn main() -> Result<()> {
         Command::Benchmark { trials, scenario, host_turn_ms, jev_ms, live, json_out } => {
             run_benchmark(trials, scenario, host_turn_ms, jev_ms, live, json_out).await
         }
-        Command::Setup { yes, no_register } => setup::run_setup(yes, !no_register).await,
+        Command::Setup { yes, no_register } => {
+            // Exit non-zero while anything is outstanding, so a script that runs setup can tell
+            // "ready" from "installed some of it and still needs a human".
+            if !setup::run_setup(yes, !no_register).await? {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
         Command::Doctor => {
             let checks = doctor::run().await;
             let ok = doctor::print(&checks);
@@ -173,9 +180,16 @@ async fn main() -> Result<()> {
 
 async fn serve_mcp(fixture: Option<String>) -> Result<()> {
     let config = RuntimeConfig::from_env();
-    let jev = Arc::new(
-        TypeSafeClient::from_env(config.jev_timeout_ms).context("the MCP server needs a Jev client")?,
-    );
+    // Start even without a key. A server that exits at launch shows up in the host agent as a
+    // bare connection failure, which tells the person nothing; one that starts and explains
+    // itself on the first real call tells them exactly what to set.
+    let jev: Arc<dyn JevTransport> = match TypeSafeClient::from_env(config.jev_timeout_ms) {
+        Ok(client) => Arc::new(client),
+        Err(error) => {
+            tracing::warn!("{error}");
+            Arc::new(jev_browser_relay_jev::UnconfiguredJev::new(error.to_string()))
+        }
+    };
     let factory: Arc<dyn jev_browser_relay_mcp::BackendFactory> = match fixture {
         Some(name) => Arc::new(ScriptedFactory { fixture: load_fixture(&name)? }),
         None => Arc::new(HarnessFactory::default()),

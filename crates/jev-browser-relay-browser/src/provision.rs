@@ -233,9 +233,16 @@ pub async fn reclaim_orphaned_tabs() -> usize {
 
 /// Ask Browser Harness to make itself ready: daemon up, Chrome attached.
 ///
-/// `browser-harness doctor` runs `ensure_daemon()` as a side effect, which is exactly the work
-/// needed. It can block for a long time when Chrome is showing its approval sheet, so the wait is
-/// bounded here and a timeout is reported as an actionable message rather than a hang.
+/// Browser Harness runs its own `ensure_daemon()` — which starts the daemon, launches Chrome if
+/// it is closed, replaces a stale daemon, and opens `chrome://inspect#remote-debugging` when the
+/// Allow box has not been ticked — on exactly one path: when it is given a script to run on
+/// stdin. `doctor` deliberately only *reports*, so asking it to fix anything is asking the wrong
+/// question. A `pass` is therefore the whole script: the provisioning is the side effect, and
+/// this runtime verifies the result itself by pinging the socket rather than trusting the exit
+/// code.
+///
+/// The wait is bounded because Chrome may be sitting on an approval sheet, and a hang here would
+/// look like the runtime being broken rather than Chrome waiting for a click.
 pub async fn ensure_daemon(timeout: Duration) -> Result<()> {
     let Some(binary) = harness_binary() else {
         return Err(RelayError::Config(match install_plan() {
@@ -251,16 +258,23 @@ pub async fn ensure_daemon(timeout: Duration) -> Result<()> {
     };
 
     info!("starting the Browser Harness daemon");
-    let run = Command::new(&binary)
-        .arg("doctor")
-        .arg("--json")
-        .stdin(Stdio::null())
+    let mut child = Command::new(&binary)
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
-        .output();
+        .spawn()
+        .map_err(|error| RelayError::Config(format!("could not run {}: {error}", binary.display())))?;
 
-    let output = match tokio::time::timeout(timeout, run).await {
+    if let Some(mut stdin) = child.stdin.take() {
+        use tokio::io::AsyncWriteExt;
+        // The script is a no-op on purpose; closing stdin is what makes it run.
+        let _ = stdin.write_all(b"pass\n").await;
+        let _ = stdin.shutdown().await;
+        drop(stdin);
+    }
+
+    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
         Ok(Ok(output)) => output,
         Ok(Err(error)) => {
             return Err(RelayError::Config(format!("could not run {}: {error}", binary.display())))
@@ -280,12 +294,12 @@ pub async fn ensure_daemon(timeout: Duration) -> Result<()> {
         return Ok(());
     }
 
-    // The harness writes setup and permission problems to stderr as instructions. Pass them
-    // through rather than replacing them with something vaguer.
-    let detail = String::from_utf8_lossy(&output.stderr);
-    let detail = detail.trim();
+    // The harness writes setup and permission problems to stderr as instructions for the calling
+    // agent. Pass them through rather than replacing them with something vaguer.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = stderr.trim();
     let detail: String = if detail.is_empty() {
-        String::from_utf8_lossy(&output.stdout).chars().take(400).collect()
+        String::from_utf8_lossy(&output.stdout).trim().chars().take(400).collect()
     } else {
         detail.chars().take(400).collect()
     };

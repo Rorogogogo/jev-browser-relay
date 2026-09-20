@@ -50,7 +50,8 @@ fn first_line(text: &str) -> String {
     text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").chars().take(160).collect()
 }
 
-pub async fn run_setup(yes: bool, register: bool) -> Result<()> {
+/// Returns true when nothing is left for the user to do.
+pub async fn run_setup(yes: bool, register: bool) -> Result<bool> {
     println!("jev-browser-relay setup\n");
     let mut steps = Vec::new();
 
@@ -78,15 +79,14 @@ pub async fn run_setup(yes: bool, register: bool) -> Result<()> {
                  Install uv from https://docs.astral.sh/uv/ first.",
             ));
             summarize(&steps);
-            anyhow::bail!("cannot install Browser Harness on this machine");
+            return Ok(false);
         };
         let command = format!("{program} {}", args.join(" "));
         if !yes {
             println!("\n  Browser Harness is not installed. This will run:\n    {command}\n");
             if !confirm("  Install it now? [y/N] ")? {
                 steps.push(step("browser_harness", false, format!("declined — install it with: {command}")));
-                summarize(&steps);
-                return Ok(());
+                return Ok(summarize(&steps));
             }
         }
         println!("  installing Browser Harness…");
@@ -98,8 +98,7 @@ pub async fn run_setup(yes: bool, register: bool) -> Result<()> {
             if ok { format!("installed via {program}") } else { first_line(&output) },
         ));
         if !ok {
-            summarize(&steps);
-            anyhow::bail!("Browser Harness install failed");
+            return Ok(summarize(&steps));
         }
     }
 
@@ -120,8 +119,7 @@ pub async fn run_setup(yes: bool, register: bool) -> Result<()> {
                  open chrome://inspect/#remote-debugging and tick the box that allows remote\n    \
                  debugging, then run `jev-browser-relay setup` again.\n"
             );
-            summarize(&steps);
-            return Ok(());
+            return Ok(summarize(&steps));
         }
     }
 
@@ -179,21 +177,22 @@ pub async fn run_setup(yes: bool, register: bool) -> Result<()> {
         }
     }
 
-    summarize(&steps);
-    Ok(())
+    Ok(summarize(&steps))
 }
 
-fn summarize(steps: &[Step]) {
+/// Print what is left and report whether the machine is ready.
+fn summarize(steps: &[Step]) -> bool {
     let failed: Vec<&Step> = steps.iter().filter(|s| !s.ok).collect();
     println!();
     if failed.is_empty() {
         println!("Ready. Ask your agent to do something in a browser.");
-    } else {
-        println!("{} step(s) still need you:", failed.len());
-        for step in failed {
-            println!("  - {}: {}", step.name, step.detail);
-        }
+        return true;
     }
+    println!("{} step(s) still need you:", failed.len());
+    for step in failed {
+        println!("  - {}: {}", step.name, step.detail);
+    }
+    false
 }
 
 fn confirm(prompt: &str) -> Result<bool> {

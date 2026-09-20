@@ -138,7 +138,7 @@ impl SafetyPolicy {
             return None;
         }
 
-        let label = crate::value_pool::normalize(action.element_label());
+        let label = crate::value_pool::normalize(&action.element_label());
         if label.is_empty() {
             return None;
         }
@@ -185,7 +185,7 @@ impl SafetyPolicy {
         ConsequenceFinding {
             class,
             matched: matched.to_string(),
-            control_label: action.element_label().to_string(),
+            control_label: action.element_label(),
             url: snapshot.url.clone(),
         }
     }
