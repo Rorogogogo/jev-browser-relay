@@ -472,7 +472,7 @@ async fn a_weak_check_cannot_veto_direct_evidence() {
 }
 
 #[tokio::test]
-async fn one_unrendered_value_does_not_fail_an_otherwise_good_run() {
+async fn a_partly_evidenced_run_is_inconclusive_rather_than_failed_or_verified() {
     // Observed live: a Wikipedia task succeeded, and was reported failed because the context
     // key `language: English` is an input to the search that no article page displays. If every
     // absence were decisive, the more context a host helpfully supplied the likelier a correct
@@ -508,8 +508,13 @@ async fn one_unrendered_value_does_not_fail_an_otherwise_good_run() {
         .find(|c| c.name == "value_present:interface language")
         .expect("the value was checked");
     assert!(!unrendered.passed);
-    assert!(!unrendered.decisive, "a single unrendered value must not veto the run");
-    assert_eq!(verification.verdict, Verdict::Verified, "checks: {:#?}", verification.checks);
+    assert!(!unrendered.decisive, "a single unrendered value must not fail the run outright");
+
+    // Not failed — but not verified either. The runtime genuinely cannot tell whether the
+    // missing value is one the page never displays or one the task never applied, so it says so
+    // and hands the question to the host rather than guessing in either direction.
+    assert_eq!(verification.verdict, Verdict::Inconclusive, "checks: {:#?}", verification.checks);
+    assert!(verification.host_verification_required);
 }
 
 #[tokio::test]
@@ -667,4 +672,41 @@ async fn ordinary_back_and_forth_navigation_is_not_a_cycle() {
 
     assert!(matches!(outcome, RunOutcome::Done { .. }), "got {outcome:?}");
     assert_eq!(session.metrics.browser_actions, 4);
+}
+
+#[tokio::test]
+async fn every_task_value_present_is_what_earns_a_verified_verdict() {
+    // Observed live: a flights run searched the route but never applied the requested Nonstop
+    // filter. Six of seven task values were on the page. Under an "any value present" rule that
+    // reported `verified` — the runtime asserting a success it had evidence against.
+    let jev = Arc::new(ScriptedJev::new(vec![
+        Planned::targeting(Operation::Select, "One way"),
+        Planned::targeting(Operation::TypeText, "Where from?"),
+        Planned::targeting(Operation::TypeText, "Where to?"),
+        Planned::targeting(Operation::TypeText, "Departure"),
+        Planned::targeting(Operation::Click, "Search"),
+        Planned::new(Operation::Done),
+    ]));
+    let mut session = session_with(
+        FLIGHTS,
+        "Find one-way flights from Sydney to Tokyo",
+        Some(json!({
+            "origin": "Sydney",
+            "destination": "Tokyo",
+            "date": "2026-10-10",
+            "trip_type": "one-way"
+        })),
+        jev,
+        test_config(),
+    )
+    .await;
+
+    let outcome = session.run(budget()).await;
+    let RunOutcome::Done { verification, .. } = &outcome else { panic!("got {outcome:?}") };
+
+    // Everything the task asked for is on the page, so this one really is verified.
+    assert_eq!(verification.verdict, Verdict::Verified, "checks: {:#?}", verification.checks);
+    assert!(!verification.host_verification_required);
+    let aggregate = verification.checks.iter().find(|c| c.name == "task_values_visible").unwrap();
+    assert!(aggregate.detail.starts_with("4/4"), "{}", aggregate.detail);
 }

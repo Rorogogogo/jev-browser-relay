@@ -104,8 +104,19 @@ pub fn verify(snapshot: &Snapshot, pool: &ValuePool, initial_url: &str, goal: &s
         });
     }
 
-    // The aggregate is the decisive one: if the task had checkable values and *none* of them
-    // reached the page, the run did not do what it claimed.
+    // The aggregate is the decisive one, and it is deliberately all-or-nothing.
+    //
+    // Two weaker rules were tried against live runs and both are wrong. Failing on *any* missing
+    // value punishes a host for supplying context: `language: English` steers a search and no
+    // article page displays it, so a correct run got reported as failed. Passing on *any* present
+    // value is worse in the other direction: a flights run that searched the route but never
+    // applied the requested Nonstop filter had six of seven values on the page and was reported
+    // verified, which is the runtime asserting a success it had evidence against.
+    //
+    // The honest mapping is three-way, and it falls out of `decisive` plus `checked_values`:
+    // everything present is Verified, nothing present is Failed, and anything in between is
+    // Inconclusive — the runtime did the work and cannot settle the question, so the host looks.
+    // A partial result names the missing value, so that check is cheap to resolve.
     if checked_values > 0 {
         checks.push(Check {
             name: "task_values_visible".into(),
@@ -158,15 +169,16 @@ pub fn verify(snapshot: &Snapshot, pool: &ValuePool, initial_url: &str, goal: &s
     }
 
     let decisive_failures = checks.iter().filter(|c| c.decisive && !c.passed).count();
-    // Without any task values to look for, nothing here is strong enough to call a success.
+    debug_assert!(visible_values <= checked_values);
     let verdict = if decisive_failures > 0 {
         Verdict::Failed
-    } else if checked_values == 0 {
+    } else if checked_values == 0 || visible_values < checked_values {
+        // Either nothing could be checked, or only some of it landed. Both mean the same thing:
+        // the runtime cannot settle this, and saying "verified" would be a claim it cannot back.
         Verdict::Inconclusive
     } else {
         Verdict::Verified
     };
-    debug_assert!(visible_values <= checked_values);
 
     VerificationReport {
         verdict,

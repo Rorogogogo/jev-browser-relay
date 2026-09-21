@@ -35,9 +35,27 @@
   };
   const roles=['button','link','checkbox','radio','switch','tab','menuitem','menuitemradio',
     'option','gridcell','combobox','textbox','searchbox','spinbutton'];
-  const selector='a[href],button,input,textarea,select,summary,[contenteditable="true"],'+
+  // `label` is included for the visually-hidden-input pattern: a styled label over an
+  // `opacity: 0` checkbox or radio. The input fails checkVisibility, the label has no role, and
+  // so a control the user plainly sees is absent from the action space entirely. Observed live
+  // on a Google Flights filter, where every option was unreachable and the agent could only
+  // open and close the dialog.
+  const selector='a[href],button,input,textarea,select,summary,label,[contenteditable="true"],'+
     roles.map(role=>'[role="'+role+'"]').join(',');
+  // The element that actually carries the state for e: a label stands in for its control.
+  const controlOf = e => e.tagName==='LABEL' ? e.control : e;
   const role = e => {
+    if (e.tagName==='LABEL') {
+      const c=e.control;
+      // Only stand in for a checkbox or radio, and only when the control cannot be reached on
+      // its own — otherwise the same control would be offered twice, once as itself and once
+      // as its label. A hidden text input is deliberately not promoted: clicking a label
+      // focuses it, but typing needs the input, so guessing here would offer a target that
+      // cannot do what its role claims.
+      if (!c || !['checkbox','radio'].includes(c.type)) return null;
+      if (c.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return null;
+      return c.type;
+    }
     const explicit=e.getAttribute('role');
     if (roles.includes(explicit)) return explicit;
     if (e.tagName==='BUTTON' || e.tagName==='SUMMARY') return 'button';
@@ -66,7 +84,8 @@
   };
   const actions=[];
   for (const e of document.querySelectorAll(selector)) {
-    if (!safe(e) || !visible(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"]')) continue;
+    const ctl=controlOf(e);
+    if (!ctl || !safe(ctl) || !visible(e) || ctl.matches(':disabled') || e.closest('[aria-disabled="true"]')) continue;
     const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2, rname=role(e);
     if (!rname || r.width<=0 || r.height<=0 || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;
     if (rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
@@ -76,7 +95,7 @@
       const value=e.getAttribute('aria-'+key);
       if (value!==null) base[key]=value;
     }
-    if (['checkbox','radio'].includes(e.type)) base.checked=String(e.checked);
+    if (['checkbox','radio'].includes(ctl.type)) base.checked=String(ctl.checked);
     if (e.tagName==='SELECT') {
       for (const o of e.options) if (!o.selected && !o.disabled && !o.closest('optgroup[disabled]'))
         actions.push({...base,kind:'select',value:o.value,

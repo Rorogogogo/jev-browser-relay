@@ -244,9 +244,15 @@ itself:
 
 | Verdict | What it means |
 | --- | --- |
-| `verified` | The task's values are on the final page, navigation progressed, no error state. Trust it. |
-| `failed` | A decisive check failed. Something went wrong. |
-| `inconclusive` | Nothing checkable to go on — `host_verification_required` is set. |
+| `verified` | **Every** task value is on the final page, navigation progressed, no error state. Trust it. |
+| `failed` | Nothing the task was about reached the page, or a decisive check failed. |
+| `inconclusive` | Some values landed and some did not, or nothing was checkable. The reply names which — often the difference between a value the page never displays and a step the task never completed. |
+
+`inconclusive` is not a failure; it means the runtime did the work and cannot settle the question.
+Both stricter rules were tried against live runs and both are wrong: failing on any missing value
+punishes you for supplying context a page never displays, and passing on any present value once
+reported a flights run as verified when it had searched the route but never applied the requested
+filter. Three-way is the honest mapping.
 
 When `host_verification_required` is `true`, **look at the page yourself** before reporting
 success. Your agent can call `jev_browser_observe` to read it without acting.
@@ -274,7 +280,7 @@ and prints the fix for whatever is wrong. It never prints your key.
 | Agent shows the server as connected, but every task errors with `config_error` | `TYPESAFE_API_KEY` is not set in the environment your agent launches the server from. The server starts without it on purpose, so you get this message instead of a bare connection failure. |
 | Lots of `needs_input` pauses | Thin `context`. See §2 — the values you supply up front are the questions you avoid. |
 | Lots of `needs_reasoning` pauses | A vague goal, or a genuinely ambiguous site. **Lower** `JEV_RELAY_REASONING_THRESHOLD` (e.g. `0.2`) to escalate less — but each escalation it suppresses is a decision the model said it was unsure about. |
-| `verdict: failed` on a task that looks fine | The task's values were not found on the final page. Read `checks` in the reply — each one says what it looked for. |
+| `verdict: inconclusive` on a task that looks fine | Some task values were not found on the final page. Read `checks` — the failing one names the value, which is usually either a context key the page never displays, or a step that genuinely did not happen. |
 | A second `start` returned `reused: true` | That task was already open, so it resumed instead of stranding the first session behind a stray tab. Pass `force_new` if you really want two. |
 | Stray Chrome tabs after a crash | The next run closes them. Tabs are recorded with the pid that opened them; owner gone means safe to reclaim. |
 
