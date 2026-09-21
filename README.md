@@ -313,17 +313,33 @@ end.
 
 ### What has been exercised against the real thing
 
-The browser layer has run against real Chrome: `jev-browser-relay setup` installs and starts the
-Browser Harness daemon, the Rust IPC client drives it over its Unix socket, and
-`jev-browser-relay inspect --url …` opens a background tab, injects the snapshot script, and
-returns the element table — with the tab closed and its ownership record cleared afterwards. No
-API key is needed for any of that, so you can verify it yourself in one command.
+The whole stack has now run live: `setup` installs and starts the Browser Harness daemon, the
+Rust client drives it over its Unix socket, and real tasks complete against real sites through
+the real TypeSafe API.
 
-**Not yet exercised: decision quality against the live TypeSafe API.** The transport is confirmed
-— a request to `api.typesafe.ai` returns a well-formed `401` without a key, so the URL, auth
-scheme and body shape are accepted — but how well Jev actually chooses on real pages is not
-something the scripted tests can tell you. Set `TYPESAFE_API_KEY` and run
-`jev-browser-relay run --url … --goal …` to find out.
+Two tasks, several trials each, every one independently verified by the runtime:
+
+| task | host turns | browser actions | wall clock | verdict |
+| --- | ---: | ---: | ---: | --- |
+| Wikipedia search and open article | **1** | 2 | ~3.1 s | verified |
+| Google Flights, Sydney→Tokyo, 2026-10-10, one-way | **3 – 11** | 8 – 10 | 6.5 – 8.4 s | verified |
+
+The Wikipedia figure is stable across runs. **The Google Flights figure is not**, and the spread
+is the honest headline: across seven runs it ranged from 3 to 11 host turns, driven entirely by
+how often the policy model asked for help on near-identical controls. I have not established
+what causes the spread — page variation and model non-determinism are both plausible, and seven
+runs is not enough to separate them.
+
+Read the fixture benchmark above in that light. On the scripted scenarios the relay does 5
+browser actions per host turn; on a hard, dynamic, adversarial site it can drop to roughly 1,
+which is close to break-even against a host-driven agent. The mechanism works — the flights task
+really does set the route, the date and the cabin and reach a verified results page — but *how
+much* it saves depends heavily on the site, and the benchmark numbers are the optimistic end of
+that range, not a typical one.
+
+The reasoning threshold that governs escalation is configurable
+(`JEV_RELAY_REASONING_THRESHOLD`). It has deliberately **not** been tuned down to flatter these
+numbers: every escalation it suppresses is a decision the policy model said it was unsure about.
 
 ---
 

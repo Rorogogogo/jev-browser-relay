@@ -174,7 +174,10 @@ impl BrowserBackend for HarnessBackend {
                 Err(error) => return Err(error),
             }
             if attempt < 9 {
-                tokio::time::sleep(Duration::from_millis(20)).await;
+                // Escalating, not flat: a real navigation takes far longer than the 200 ms a
+                // fixed 20 ms retry allowed, and burning ten attempts inside a fifth of a second
+                // meant a perfectly normal page load surfaced as a hard failure.
+                tokio::time::sleep(Duration::from_millis(25 * (attempt as u64 + 1))).await;
             }
         }
         Err(last)

@@ -25,6 +25,15 @@ pub struct Check {
     pub name: String,
     pub passed: bool,
     pub detail: String,
+    /// Whether failing this check is on its own enough to call the task failed.
+    ///
+    /// Not every signal deserves a veto. A live Google Flights run set the right route, the
+    /// right date and the right cabin, had all six of those values visible on the results page —
+    /// and was reported as failed because fewer than half the words in the goal appeared. Words
+    /// like "departing", "matching" and "stop" are instructions to the agent, not content that
+    /// any results page would ever show. One weak heuristic must not overrule the direct
+    /// evidence.
+    pub decisive: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -60,9 +69,12 @@ pub fn verify(snapshot: &Snapshot, pool: &ValuePool, initial_url: &str, goal: &s
             .join(" ")
     ));
 
-    let squashed_haystack: String = haystack.chars().filter(char::is_ascii_alphanumeric).collect();
+    // `haystack` is already normalized, so diacritics are folded; squashing only removes the
+    // separators that remain.
+    let squashed_haystack: String = haystack.chars().filter(|c| c.is_alphanumeric()).collect();
     let assertable = pool.assertable();
     let mut checked_values = 0;
+    let mut visible_values = 0;
     for entry in &assertable {
         // Only check values that are plausibly rendered as text. A long free-text blob or a
         // boolean tells us nothing about success.
@@ -71,15 +83,19 @@ pub fn verify(snapshot: &Snapshot, pool: &ValuePool, initial_url: &str, goal: &s
             continue;
         }
         checked_values += 1;
-        // The same fact often reaches the page in a different surface form: "one-way" rendered
-        // as "One way", an ISO date rendered as "10 Oct 2026". Check those too, or a correct
-        // run gets reported as unverified.
-        let present = haystack.contains(&value)
-            || date_variants(&entry.value).iter().any(|v| haystack.contains(v))
-            || squashed_match(&squashed_haystack, &value);
+        let present = value_on_page(&haystack, &squashed_haystack, &entry.value, &value);
+        if present {
+            visible_values += 1;
+        }
         checks.push(Check {
             name: format!("value_present:{}", entry.key),
             passed: present,
+            // Individually informational. A task value may simply not be rendered on the page
+            // that proves success — "language: English" is an input to the search, not
+            // something an article displays. Making each absence decisive would mean the more
+            // context the host helpfully supplies, the more likely a correct run is reported as
+            // failed, which is exactly backwards. What matters is the aggregate below.
+            decisive: false,
             detail: if present {
                 format!("\"{}\" is visible on the final page", entry.redacted())
             } else {
@@ -88,10 +104,22 @@ pub fn verify(snapshot: &Snapshot, pool: &ValuePool, initial_url: &str, goal: &s
         });
     }
 
+    // The aggregate is the decisive one: if the task had checkable values and *none* of them
+    // reached the page, the run did not do what it claimed.
+    if checked_values > 0 {
+        checks.push(Check {
+            name: "task_values_visible".into(),
+            passed: visible_values > 0,
+            decisive: true,
+            detail: format!("{visible_values}/{checked_values} task values visible on the final page"),
+        });
+    }
+
     let moved = snapshot.url != initial_url;
     checks.push(Check {
         name: "navigation_progressed".into(),
         passed: moved,
+        decisive: true,
         detail: if moved {
             format!("url changed from {initial_url} to {}", snapshot.url)
         } else {
@@ -106,6 +134,7 @@ pub fn verify(snapshot: &Snapshot, pool: &ValuePool, initial_url: &str, goal: &s
     checks.push(Check {
         name: "no_error_state".into(),
         passed: error_state.is_none(),
+        decisive: true,
         detail: match error_state {
             Some(found) => format!("page shows \"{found}\""),
             None => "no obvious error or empty-result text".into(),
@@ -121,19 +150,23 @@ pub fn verify(snapshot: &Snapshot, pool: &ValuePool, initial_url: &str, goal: &s
         checks.push(Check {
             name: "goal_terms_visible".into(),
             passed,
+            // Informational. A goal is phrased as an instruction, so much of its vocabulary
+            // describes what to do rather than what the finished page will say.
+            decisive: checked_values == 0,
             detail: format!("{goal_hits}/{} distinctive goal terms visible", goal_terms.len()),
         });
     }
 
-    let failures = checks.iter().filter(|c| !c.passed).count();
-    // Without any task values to look for, the remaining checks are too weak to call a success.
-    let verdict = if failures > 0 {
+    let decisive_failures = checks.iter().filter(|c| c.decisive && !c.passed).count();
+    // Without any task values to look for, nothing here is strong enough to call a success.
+    let verdict = if decisive_failures > 0 {
         Verdict::Failed
     } else if checked_values == 0 {
         Verdict::Inconclusive
     } else {
         Verdict::Verified
     };
+    debug_assert!(visible_values <= checked_values);
 
     VerificationReport {
         verdict,
@@ -145,11 +178,39 @@ pub fn verify(snapshot: &Snapshot, pool: &ValuePool, initial_url: &str, goal: &s
     }
 }
 
+/// Is this task value evidenced on the page?
+///
+/// Three progressively looser tests, because a value reaches a page in more shapes than it was
+/// written in:
+///
+/// 1. the phrase verbatim
+/// 2. an ISO date rendered as prose — `2026-10-10` as "10 Oct 2026"
+/// 3. separators discarded — "one-way" as "One way"
+/// 4. for a multi-word value, every word present somewhere
+///
+/// The last is what handles possessives and inserted particles: the goal says "Godel
+/// incompleteness theorems" and the article is titled "Gödel's incompleteness theorems", where
+/// the apostrophe-s breaks contiguity without changing the meaning at all.
+fn value_on_page(haystack: &str, squashed_haystack: &str, raw: &str, normalized: &str) -> bool {
+    if haystack.contains(normalized) {
+        return true;
+    }
+    if date_variants(raw).iter().any(|v| haystack.contains(v)) {
+        return true;
+    }
+    if squashed_match(squashed_haystack, raw) {
+        return true;
+    }
+    // Every word present, each long enough not to match by accident.
+    let words: Vec<&str> = normalized.split_whitespace().filter(|w| w.len() >= 3).collect();
+    words.len() >= 2 && words.iter().all(|word| haystack.contains(word))
+}
+
 /// Compare with all separators removed, so "one-way" matches "One way" and "oneway".
 /// Short values are excluded: a two- or three-character needle matches almost anything once
 /// spacing is discarded.
 fn squashed_match(squashed_haystack: &str, value: &str) -> bool {
-    let needle: String = value.chars().filter(char::is_ascii_alphanumeric).collect();
+    let needle: String = normalize(value).chars().filter(|c| c.is_alphanumeric()).collect();
     needle.len() >= 4 && squashed_haystack.contains(&needle)
 }
 

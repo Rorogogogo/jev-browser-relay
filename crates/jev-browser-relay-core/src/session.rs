@@ -194,6 +194,9 @@ pub struct Session {
     consecutive_no_change: u32,
     consecutive_stale: u32,
     consecutive_jev_failures: u32,
+    /// Recoverable failures in a row — a document mid-navigation, a rate limit. Bounded so a
+    /// page that never settles ends the run instead of looping forever.
+    consecutive_recoverable: u32,
 
     started_at: Instant,
     last_activity: Instant,
@@ -262,6 +265,7 @@ impl Session {
             consecutive_no_change: 0,
             consecutive_stale: 0,
             consecutive_jev_failures: 0,
+            consecutive_recoverable: 0,
             started_at: Instant::now(),
             last_activity: Instant::now(),
             last_verification: None,
@@ -328,6 +332,7 @@ impl Session {
             match self.step().await {
                 Ok(StepOutcome::Continued) => {
                     steps_this_run += 1;
+                    self.consecutive_recoverable = 0;
                     self.last_activity = Instant::now();
                 }
                 Ok(StepOutcome::Retried) => {
@@ -336,6 +341,35 @@ impl Session {
                     self.last_activity = Instant::now();
                 }
                 Ok(StepOutcome::Stopped(outcome)) => break outcome,
+                // A document mid-navigation is the normal cost of clicking a link, not a
+                // failure. Re-observe and carry on, bounded by the retry budget so a page that
+                // never settles still ends the run.
+                Err(error) if error.is_recoverable() => {
+                    self.consecutive_recoverable += 1;
+                    self.metrics.retries += 1;
+                    if self.consecutive_recoverable > self.config.max_stale_retries {
+                        warn!(session = %self.id, error = %error, "gave up after repeated recoverable failures");
+                        break RunOutcome::Error {
+                            code: error.code().into(),
+                            message: format!(
+                                "{error} (gave up after {} attempts)",
+                                self.consecutive_recoverable
+                            ),
+                        };
+                    }
+                    debug!(
+                        session = %self.id,
+                        attempt = self.consecutive_recoverable,
+                        error = %error,
+                        "recoverable failure; re-observing"
+                    );
+                    self.invalidate_snapshot();
+                    // Give a navigation somewhere to land before looking again. Grows with each
+                    // attempt, because the page that needed one retry often needs a moment more.
+                    let pause = self.config.recoverable_backoff_ms * u64::from(self.consecutive_recoverable);
+                    tokio::time::sleep(std::time::Duration::from_millis(pause)).await;
+                    self.last_activity = Instant::now();
+                }
                 Err(error) => {
                     warn!(session = %self.id, error = %error, "step failed");
                     break RunOutcome::Error { code: error.code().into(), message: error.to_string() };
@@ -506,6 +540,7 @@ impl Session {
             &self.goal,
             &self.action_history.to_vec(),
             self.host_guidance.as_deref(),
+            &self.value_pool.task_facts(),
         );
         let started = Instant::now();
         let response = self.jev.post(&request).await?;
@@ -524,20 +559,33 @@ impl Session {
         if !self.config.reasoning_enabled {
             return None;
         }
-        let confidence = decision.effective_confidence();
-        if confidence < self.config.reasoning_confidence_threshold {
-            return Some(format!(
-                "policy confidence {confidence:.2} is below the {:.2} threshold",
-                self.config.reasoning_confidence_threshold
-            ));
-        }
-        if let Some(margin) = decision.target_margin() {
+        let margin = decision.target_margin();
+
+        // A flat distribution is the real signal: several actions genuinely compete.
+        if let Some(margin) = margin {
             if margin < self.config.reasoning_margin_threshold {
                 return Some(format!(
                     "several targets are near-equally plausible (top-two margin {margin:.2})"
                 ));
             }
         }
+
+        // Low absolute confidence is the weaker signal, and on real pages it runs lower than it
+        // looks like it should — a live Google Flights run reported 0.30 while still preferring
+        // one candidate 0.65 to 0.35. Escalating there costs a host round trip and buys nothing,
+        // because Jev already had a clear preference. So low confidence only escalates when
+        // there is also no front-runner.
+        let confidence = decision.effective_confidence();
+        if confidence < self.config.reasoning_confidence_threshold
+            && margin.is_none_or(|margin| margin < self.config.decisive_margin)
+        {
+            return Some(format!(
+                "policy confidence {confidence:.2} is below the {:.2} threshold, with no clear \
+                 front-runner among the targets",
+                self.config.reasoning_confidence_threshold
+            ));
+        }
+
         if self.consecutive_no_change >= self.config.no_change_reasoning_threshold {
             return Some(format!("the last {} actions did not change the page", self.consecutive_no_change));
         }

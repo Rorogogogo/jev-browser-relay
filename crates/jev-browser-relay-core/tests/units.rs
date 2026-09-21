@@ -369,3 +369,46 @@ fn history_never_grows_without_bound() {
     assert_eq!(bounded.to_vec(), vec![97, 98, 99]);
     assert_eq!(bounded.recent(2), vec![&98, &99]);
 }
+
+#[test]
+fn a_known_phrase_is_found_inside_a_qualified_label() {
+    let pool = pool_with(json!({ "query": "Godel incompleteness", "surname": "Lovelace" }));
+
+    // Head-initial: the qualifier trails the meaning.
+    assert_eq!(pool.resolve(&field("Search Wikipedia")).unwrap().value, "Godel incompleteness");
+    assert_eq!(pool.resolve(&field("Search GitHub")).unwrap().value, "Godel incompleteness");
+    // Head-final: the qualifier leads it.
+    assert_eq!(pool.resolve(&field("Customer last name")).unwrap().value, "Lovelace");
+}
+
+#[test]
+fn trimming_stops_when_the_dropped_word_carries_its_own_meaning() {
+    // "departure city" must not reach the departure-*date* group by dropping "city", because
+    // "city" is a known meaning in its own right — dropping it changed what the phrase refers to.
+    let pool = pool_with(json!({ "departure_date": "2026-10-10" }));
+    assert!(pool.resolve(&field("Departure city")).is_none(), "a date must never be typed into a city field");
+
+    // Same guard the other way: a genuinely ambiguous compound resolves to nothing and asks.
+    let phone = pool_with(json!({ "phone": "+61 400 000 000" }));
+    assert!(phone.resolve(&field("Phone country code")).is_none());
+}
+
+#[test]
+fn accented_names_match_their_plain_spelling() {
+    // Most of the world's city names carry diacritics, and people type them without.
+    assert_eq!(normalize("Gödel"), normalize("Godel"));
+    assert_eq!(normalize("Zürich"), normalize("Zurich"));
+    assert_eq!(normalize("São Paulo"), normalize("Sao Paulo"));
+    assert_eq!(normalize("Málaga"), "malaga");
+    assert_eq!(normalize("Düsseldorf"), "dusseldorf");
+
+    // And it works through the pool, in both directions.
+    let pool = pool_with(json!({ "destination": "Zurich" }));
+    assert_eq!(pool.resolve(&field("Reiseziel")).map(|r| r.value.clone()), None, "unknown labels still ask");
+    let accented = pool_with(json!({ "destination": "Zürich" }));
+    assert_eq!(
+        accented.resolve(&field("Where to?")).unwrap().value,
+        "Zürich",
+        "the typed value keeps its accents"
+    );
+}

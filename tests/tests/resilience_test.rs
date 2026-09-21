@@ -396,3 +396,207 @@ async fn sensitive_values_never_reach_logs_history_or_the_jev_request() {
     let pool = serde_json::to_string(&session.value_pool.summary()).unwrap();
     assert!(!pool.contains("4111111111111111"), "card number leaked into the value-pool summary");
 }
+
+#[tokio::test]
+async fn low_confidence_with_a_clear_front_runner_does_not_escalate() {
+    // Observed live: Jev reported 0.30 confidence while still preferring one candidate 0.65 to
+    // 0.35, and both candidates opened the same field. Escalating there spends a host round trip
+    // on a decision that was not actually in doubt.
+    let jev = Arc::new(ScriptedJev::new(vec![
+        Planned::targeting(Operation::Click, "Guides").with_confidence(0.30),
+        Planned::new(Operation::Done),
+    ]));
+    let mut session = session_with(DOCS, "Open the guides", None, jev, test_config()).await;
+
+    let outcome = session.run(budget()).await;
+
+    assert!(matches!(outcome, RunOutcome::Done { .. }), "got {outcome:?}");
+    assert_eq!(session.metrics.host_reasoning_requests, 0, "a clear front-runner is not ambiguity");
+    assert_eq!(session.metrics.browser_actions, 1);
+}
+
+#[tokio::test]
+async fn low_confidence_with_no_front_runner_still_escalates() {
+    // The case the escape hatch is actually for: unsure *and* nothing stands out.
+    let jev = Arc::new(ScriptedJev::new(vec![
+        Planned::targeting(Operation::Click, "Invoice 1041").with_confidence(0.30).ambiguous(),
+        Planned::targeting(Operation::Click, "Invoice 1042"),
+        Planned::new(Operation::Done),
+    ]));
+    let mut session = session_with(AMBIGUOUS, "Open the disputed invoice", None, jev, test_config()).await;
+
+    let outcome = session.run(budget()).await;
+
+    assert!(matches!(outcome, RunOutcome::NeedsReasoning { .. }), "got {outcome:?}");
+    assert_eq!(session.metrics.browser_actions, 0);
+}
+
+#[tokio::test]
+async fn a_weak_check_cannot_veto_direct_evidence() {
+    // Observed live: a Google Flights run set the right route, date and cabin, had all six task
+    // values visible on the results page, and was still reported "failed" because fewer than
+    // half the words in the goal appeared. Words like "departing", "matching" and "stop" are
+    // instructions to the agent, not content any results page would show.
+    let jev = Arc::new(ScriptedJev::new(vec![
+        Planned::targeting(Operation::Select, "One way"),
+        Planned::targeting(Operation::TypeText, "Where from?"),
+        Planned::targeting(Operation::TypeText, "Where to?"),
+        Planned::targeting(Operation::TypeText, "Departure"),
+        Planned::targeting(Operation::Click, "Search"),
+        Planned::new(Operation::Done),
+    ]));
+    let mut session = session_with(
+        FLIGHTS,
+        // Deliberately full of instruction vocabulary that no results page will ever render.
+        "Please locate suitable departing itineraries and stop immediately once matching \
+         selectable options become visible somewhere onscreen",
+        Some(json!({ "origin": "Sydney", "destination": "Tokyo", "date": "2026-10-10", "trip_type": "one-way" })),
+        jev,
+        test_config(),
+    )
+    .await;
+
+    let outcome = session.run(budget()).await;
+    let RunOutcome::Done { verification, .. } = &outcome else { panic!("got {outcome:?}") };
+
+    let weak = verification.checks.iter().find(|c| c.name == "goal_terms_visible").expect("weak check ran");
+    assert!(!weak.passed, "the goal vocabulary genuinely is not on the page");
+    assert!(!weak.decisive, "a goal-wording heuristic must not be able to fail the task");
+    assert_eq!(
+        verification.verdict,
+        Verdict::Verified,
+        "every task value was on the page; checks: {:#?}",
+        verification.checks
+    );
+    assert!(!verification.host_verification_required);
+}
+
+#[tokio::test]
+async fn one_unrendered_value_does_not_fail_an_otherwise_good_run() {
+    // Observed live: a Wikipedia task succeeded, and was reported failed because the context
+    // key `language: English` is an input to the search that no article page displays. If every
+    // absence were decisive, the more context a host helpfully supplied the likelier a correct
+    // run would be called a failure — exactly backwards.
+    let jev = Arc::new(ScriptedJev::new(vec![
+        Planned::targeting(Operation::TypeText, "Where from?"),
+        Planned::targeting(Operation::TypeText, "Where to?"),
+        Planned::targeting(Operation::TypeText, "Departure"),
+        Planned::targeting(Operation::Click, "Search"),
+        Planned::new(Operation::Done),
+    ]));
+    let mut session = session_with(
+        FLIGHTS,
+        "Find flights from Sydney to Tokyo",
+        Some(json!({
+            "origin": "Sydney",
+            "destination": "Tokyo",
+            "date": "2026-10-10",
+            // Never rendered on the results page, and not supposed to be.
+            "interface_language": "English"
+        })),
+        jev,
+        test_config(),
+    )
+    .await;
+
+    let outcome = session.run(budget()).await;
+    let RunOutcome::Done { verification, .. } = &outcome else { panic!("got {outcome:?}") };
+
+    let unrendered = verification
+        .checks
+        .iter()
+        .find(|c| c.name == "value_present:interface language")
+        .expect("the value was checked");
+    assert!(!unrendered.passed);
+    assert!(!unrendered.decisive, "a single unrendered value must not veto the run");
+    assert_eq!(verification.verdict, Verdict::Verified, "checks: {:#?}", verification.checks);
+}
+
+#[tokio::test]
+async fn a_run_where_no_task_value_reached_the_page_still_fails() {
+    // The veto that must survive: if nothing the task was about is anywhere on the final page,
+    // the run did not do what it claimed.
+    let jev = Arc::new(ScriptedJev::new(vec![
+        Planned::targeting(Operation::Click, "Guides"),
+        Planned::new(Operation::Done),
+    ]));
+    let mut session = session_with(
+        DOCS,
+        "Configure the billing settings",
+        Some(json!({ "plan": "Enterprise annual", "seats": "250 seats" })),
+        jev,
+        test_config(),
+    )
+    .await;
+
+    let outcome = session.run(budget()).await;
+    let RunOutcome::Done { verification, .. } = &outcome else { panic!("got {outcome:?}") };
+
+    let aggregate = verification
+        .checks
+        .iter()
+        .find(|c| c.name == "task_values_visible")
+        .expect("the aggregate check ran");
+    assert!(!aggregate.passed);
+    assert!(aggregate.decisive, "no task value anywhere is decisive evidence of failure");
+    assert_eq!(verification.verdict, Verdict::Failed);
+    assert!(verification.host_verification_required);
+}
+
+#[tokio::test]
+async fn a_possessive_does_not_break_a_multi_word_value() {
+    // "Godel incompleteness theorems" vs a page titled "Gödel's incompleteness theorems": the
+    // apostrophe-s breaks contiguity without changing the meaning.
+    let jev = Arc::new(ScriptedJev::new(vec![
+        Planned::targeting(Operation::TypeText, "Where from?"),
+        Planned::targeting(Operation::TypeText, "Where to?"),
+        Planned::targeting(Operation::TypeText, "Departure"),
+        Planned::targeting(Operation::Click, "Search"),
+        Planned::new(Operation::Done),
+    ]));
+    let mut session = session_with(
+        FLIGHTS,
+        "Find flights",
+        // The fixture renders "Sydney to Tokyo", so this phrase is present only word-by-word.
+        Some(json!({ "origin": "Sydney", "destination": "Tokyo", "date": "2026-10-10",
+                     "route": "Sydney Tokyo" })),
+        jev,
+        test_config(),
+    )
+    .await;
+
+    let outcome = session.run(budget()).await;
+    let RunOutcome::Done { verification, .. } = &outcome else { panic!("got {outcome:?}") };
+    let route =
+        verification.checks.iter().find(|c| c.name == "value_present:route").expect("the route was checked");
+    assert!(route.passed, "every word is on the page: {:#?}", verification.checks);
+}
+
+#[tokio::test]
+async fn the_task_context_reaches_the_policy_model_but_secrets_do_not() {
+    let jev = Arc::new(ScriptedJev::new(vec![
+        Planned::targeting(Operation::Click, "Continue to checkout"),
+        Planned::new(Operation::Blocked),
+    ]));
+    let mut session = session_with(
+        CHECKOUT,
+        "Buy the item",
+        Some(json!({ "quantity": "2", "card number": "4111111111111111" })),
+        jev.clone(),
+        test_config(),
+    )
+    .await;
+
+    session.run(budget()).await;
+
+    let requests = jev.requests.lock().unwrap();
+    let first = requests.first().expect("at least one request");
+    let facts = &first.state["task_facts"];
+
+    // A close call between two controls should be settled by what the task already says.
+    assert_eq!(facts["quantity"], "2", "task values must reach the policy model: {facts}");
+    // A secret belongs in the field it is typed into and nowhere else.
+    assert!(facts.get("card number").is_none(), "a sensitive value must never be sent: {facts}");
+    let encoded = serde_json::to_string(&*requests).unwrap();
+    assert!(!encoded.contains("4111111111111111"));
+}

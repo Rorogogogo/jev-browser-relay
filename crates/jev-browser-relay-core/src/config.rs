@@ -13,6 +13,9 @@ pub struct RuntimeConfig {
     /// Hard ceiling across all `run` calls in a session.
     pub max_session_steps: u32,
     pub max_stale_retries: u32,
+    /// Base pause before re-observing after a recoverable failure; multiplied by the attempt
+    /// number, so a slow navigation gets progressively longer to land.
+    pub recoverable_backoff_ms: u64,
     pub max_jev_retries: u32,
     pub jev_timeout_ms: u64,
 
@@ -25,6 +28,9 @@ pub struct RuntimeConfig {
     pub reasoning_confidence_threshold: f64,
     /// Minimum gap between the top two targets before the choice counts as ambiguous.
     pub reasoning_margin_threshold: f64,
+    /// A top-two gap at or above this counts as a clear front-runner, and suppresses the
+    /// low-confidence escalation on its own.
+    pub decisive_margin: f64,
     /// Unchanged-page actions before asking the host for guidance.
     pub no_change_reasoning_threshold: u32,
     /// Unchanged-page actions before declaring the session blocked.
@@ -49,6 +55,7 @@ impl Default for RuntimeConfig {
             default_max_duration_ms: 60_000,
             max_session_steps: 120,
             max_stale_retries: 5,
+            recoverable_backoff_ms: 150,
             max_jev_retries: 3,
             jev_timeout_ms: 25_000,
             value_confidence_threshold: 0.6,
@@ -56,6 +63,7 @@ impl Default for RuntimeConfig {
             // Deliberately low. Host reasoning is an escape hatch, not a step in normal
             // execution — every trigger here is a round trip the project exists to avoid.
             reasoning_confidence_threshold: 0.35,
+            decisive_margin: 0.2,
             reasoning_margin_threshold: 0.05,
             no_change_reasoning_threshold: 3,
             no_change_blocked_threshold: 5,

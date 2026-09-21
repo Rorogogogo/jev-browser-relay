@@ -106,6 +106,7 @@ fn margin(probabilities: &BTreeMap<String, f64>) -> Option<f64> {
 }
 
 /// Build the one request that answers "which operation" and "which target" together.
+#[allow(clippy::too_many_arguments)]
 pub fn build_request(
     model: &str,
     snapshot: &Snapshot,
@@ -113,6 +114,7 @@ pub fn build_request(
     goal: &str,
     history: &[ActionRecord],
     host_guidance: Option<&str>,
+    task_facts: &Map<String, Value>,
 ) -> JevRequest {
     let mut operations = Map::new();
     for op in space.offered_operations() {
@@ -192,6 +194,10 @@ pub fn build_request(
             "page": { "url": snapshot.url, "title": snapshot.title, "text": snapshot.text },
             "elements": space.elements,
             "recent_actions": recent,
+            // The task's known values as structured pairs, not just buried in the goal prose.
+            // This is what lets a requirement like `trip_type: one-way` settle a close call
+            // between two controls instead of costing a host round trip.
+            "task_facts": Value::Object(task_facts.clone()),
         }),
         questions: Value::Object(questions),
     }

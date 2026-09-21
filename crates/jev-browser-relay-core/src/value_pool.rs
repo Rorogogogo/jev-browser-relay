@@ -221,7 +221,38 @@ const SENSITIVE_KEYS: &[&str] = &[
     "auth",
 ];
 
-/// Lowercase, strip punctuation, collapse whitespace, drop filler words.
+/// Fold a Latin letter carrying a diacritic to its plain form.
+///
+/// A person writes "Godel", "Zurich" or "Sao Paulo"; the page renders "Gödel", "Zürich",
+/// "São Paulo". Without folding, a task that genuinely succeeded fails verification because the
+/// value it typed is "not on the page", and a context key never matches its own field. Accented
+/// proper nouns are not an edge case in browser work — they are most of the world's city names.
+fn fold_diacritic(c: char) -> Option<&'static str> {
+    Some(match c {
+        'á' | 'à' | 'â' | 'ä' | 'ã' | 'å' | 'ā' | 'ă' | 'ą' => "a",
+        'ç' | 'ć' | 'č' => "c",
+        'ď' | 'đ' | 'ð' => "d",
+        'é' | 'è' | 'ê' | 'ë' | 'ē' | 'ė' | 'ę' | 'ě' => "e",
+        'ğ' => "g",
+        'í' | 'ì' | 'î' | 'ï' | 'ī' | 'į' | 'ı' => "i",
+        'ł' => "l",
+        'ñ' | 'ń' | 'ň' => "n",
+        'ó' | 'ò' | 'ô' | 'ö' | 'õ' | 'ø' | 'ō' | 'ő' => "o",
+        'ř' => "r",
+        'ś' | 'š' | 'ş' => "s",
+        'ť' | 'ţ' => "t",
+        'ú' | 'ù' | 'û' | 'ü' | 'ū' | 'ů' | 'ű' => "u",
+        'ý' | 'ÿ' => "y",
+        'ž' | 'ź' | 'ż' => "z",
+        'þ' => "th",
+        'æ' => "ae",
+        'œ' => "oe",
+        'ß' => "ss",
+        _ => return None,
+    })
+}
+
+/// Lowercase, fold diacritics, strip punctuation, collapse whitespace, drop filler words.
 pub fn normalize(raw: &str) -> String {
     // "type" is deliberately absent: it carries meaning in keys like `trip_type` and
     // `card_type`, and stripping it silently merges distinct fields.
@@ -229,9 +260,21 @@ pub fn normalize(raw: &str) -> String {
         "the", "a", "an", "your", "please", "enter", "select", "choose", "input", "field", "optional",
         "required",
     ];
-    let cleaned: String =
-        raw.chars().map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { ' ' }).collect();
+    let mut cleaned = String::with_capacity(raw.len());
+    // Unicode-aware lowercasing, so 'Ö' becomes 'ö' and then folds to 'o'.
+    for c in raw.to_lowercase().chars() {
+        match fold_diacritic(c) {
+            Some(folded) => cleaned.push_str(folded),
+            None if c.is_alphanumeric() => cleaned.push(c),
+            None => cleaned.push(' '),
+        }
+    }
     cleaned.split_whitespace().filter(|w| !FILLER.contains(w)).collect::<Vec<_>>().join(" ")
+}
+
+/// Tokens present in `longer` but not in `shorter`.
+fn extra_tokens(longer: &[String], shorter: &[String]) -> Vec<String> {
+    longer.iter().filter(|t| !shorter.contains(t)).cloned().collect()
 }
 
 fn tokens(raw: &str) -> Vec<String> {
@@ -243,23 +286,41 @@ fn alias_group(normalized: &str) -> Option<usize> {
     ALIAS_GROUPS.iter().position(|group| group.iter().any(|alias| normalize(alias) == normalized))
 }
 
-/// Alias lookup that tolerates a qualifying prefix, so a namespaced context key like
-/// `traveller.last_name` still reaches the `surname` group.
+/// Alias lookup that tolerates a qualifier around a known phrase, so a namespaced context key
+/// like `traveller.last_name` reaches the `surname` group and a label like "Search Wikipedia"
+/// reaches the `query` group.
 ///
-/// Only *suffixes* are tried, never arbitrary token windows: English noun phrases are
-/// head-final, so the trailing tokens carry the meaning. Trying every window instead would let
-/// "departure city" reach the departure-*date* group, which is precisely the kind of silent
-/// mis-fill this table exists to prevent. The exact flag lets the caller score a trimmed match
-/// slightly lower than a whole-phrase one.
+/// Trimming is guarded rather than free. Any contiguous sub-phrase may match, **but only when
+/// every token dropped to reach it is itself semantically inert** — not a member of any alias
+/// group. That distinction is what separates the two cases:
+///
+/// - "search wikipedia" → "search" (query), dropping "wikipedia", which means nothing here. Safe.
+/// - "departure city" → "departure" (departure *date*), dropping "city", which is a known
+///   meaning of its own. Trimming it changed what the phrase refers to, so it is refused.
+///
+/// An earlier version trimmed only leading tokens, on the theory that English noun phrases are
+/// head-final. That holds for "traveller last name" and fails immediately for "Search Wikipedia",
+/// which is a verb phrase. The inertness guard covers both without needing to know which.
 fn alias_group_relaxed(normalized: &str) -> Option<(usize, bool)> {
     if let Some(group) = alias_group(normalized) {
         return Some((group, true));
     }
     let tokens: Vec<&str> = normalized.split_whitespace().collect();
-    // Longest suffix first, so "last name" is preferred over "name".
-    for start in 1..tokens.len() {
-        if let Some(group) = alias_group(&tokens[start..].join(" ")) {
-            return Some((group, false));
+    if tokens.len() < 2 {
+        return None;
+    }
+    // Longest sub-phrase first, so "last name" is preferred over "name".
+    for length in (1..tokens.len()).rev() {
+        for start in 0..=(tokens.len() - length) {
+            let Some(group) = alias_group(&tokens[start..start + length].join(" ")) else { continue };
+            let dropped_carries_meaning = tokens
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index < start || *index >= start + length)
+                .any(|(_, token)| alias_group(token).is_some());
+            if !dropped_carries_meaning {
+                return Some((group, false));
+            }
         }
     }
     None
@@ -300,10 +361,23 @@ fn similarity(key: &str, label: &str) -> (f64, &'static str) {
         return (0.0, "no tokens");
     }
     // One phrase fully contained in the other, e.g. "email" in "work email".
-    if key_tokens.iter().all(|t| label_tokens.contains(t))
-        || label_tokens.iter().all(|t| key_tokens.contains(t))
-    {
-        return (0.8, "token containment");
+    //
+    // Guarded by the same inertness rule as alias trimming, and for the same reason: the extra
+    // words have to be noise. "work" in "work email" is noise, so the match holds. "country" in
+    // "phone country code" is a meaning of its own, and ignoring it would put a phone number in
+    // a dialling-code field — a bare containment check happily does exactly that.
+    let contained = if key_tokens.iter().all(|t| label_tokens.contains(t)) {
+        Some(extra_tokens(&label_tokens, &key_tokens))
+    } else if label_tokens.iter().all(|t| key_tokens.contains(t)) {
+        Some(extra_tokens(&key_tokens, &label_tokens))
+    } else {
+        None
+    };
+    if let Some(extra) = contained {
+        if extra.iter().all(|token| alias_group(token).is_none()) {
+            return (0.8, "token containment");
+        }
+        return (0.0, "containment blocked by a meaningful extra word");
     }
     let shared = key_tokens.iter().filter(|t| label_tokens.contains(t)).count() as f64;
     let union = (key_tokens.len() + label_tokens.len()) as f64 - shared;
@@ -457,6 +531,24 @@ impl ValuePool {
     /// page, and the only ones safe to echo to the host.
     pub fn assertable(&self) -> Vec<&ValueEntry> {
         self.entries.values().filter(|e| !e.sensitive && e.source != ValueSource::Derived).collect()
+    }
+
+    /// The task's known facts, for the policy model's own context.
+    ///
+    /// Jev was deciding "one way" vs "round trip" at 0.54/0.39 on a live Google Flights page
+    /// while the runtime already held `trip_type: one-way` and was not telling it. The goal text
+    /// alone leaves that kind of requirement buried in prose; as structured pairs it is the
+    /// thing most likely to settle a close call — and every escalation it prevents is a host
+    /// round trip saved, which is the whole point of the project.
+    ///
+    /// Sensitive values are excluded outright: a password belongs in the field it is typed into
+    /// and nowhere else, least of all in a model request.
+    pub fn task_facts(&self) -> serde_json::Map<String, serde_json::Value> {
+        self.entries
+            .values()
+            .filter(|entry| !entry.sensitive)
+            .map(|entry| (entry.key.clone(), serde_json::json!(entry.value)))
+            .collect()
     }
 
     /// A redacted listing for the host and for traces.
