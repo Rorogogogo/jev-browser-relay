@@ -105,27 +105,11 @@ You never need to start the daemon by hand — any session that finds it down st
 
 ## 🚀 Quick Start
 
-Say to Claude Code:
+Ask your agent for something that needs a browser:
 
-> Find one-way flights from Sydney to Tokyo on October 10.
+> Find one-way flights from Sydney to Tokyo on October 10 and tell me the cheapest nonstop.
 
-It derives the structured context, starts a session, and calls `jev_browser_run` **once**:
-
-```json
-{
-  "url": "https://www.google.com/travel/flights?hl=en",
-  "goal": "Find one-way flights from Sydney to Tokyo on 2026-10-10. Stop when flight options are visible.",
-  "context": {
-    "origin": "Sydney",
-    "destination": "Tokyo",
-    "departure_date": "2026-10-10",
-    "trip_type": "one-way",
-    "cabin": "economy"
-  }
-}
-```
-
-The runtime does the rest:
+It starts a session and calls `jev_browser_run` **once**. Behind that single call:
 
 ```
 Jev → SELECT one way          Jev → TYPE_TEXT "Where from?"  runtime → "Sydney"  (from context)
@@ -133,22 +117,175 @@ Jev → TYPE_TEXT "Where to?"   runtime → "Tokyo"              Jev → TYPE_TE
 Jev → CLICK Search            Jev → DONE                     runtime → verify
 ```
 
-No Chrome and no API key? Everything below runs offline against scripted page models:
+One host turn for the whole task. The [Guide](#-guide) below covers writing goals that work,
+the three things the runtime can ask you for, and how to read the verdict.
+
+---
+
+## 📖 Guide
+
+### 1. Ask for something that needs a browser
+
+With the MCP server registered, you just talk to your agent. You never write the tool calls
+yourself.
+
+> **You:** Find one-way flights from Sydney to Tokyo on October 10 and tell me the cheapest
+> nonstop.
+
+Your agent turns that into a session — a starting url, a goal, and a `context` object of the
+values your request implied. Then it calls `jev_browser_run` **once** and waits. Behind that one
+call the runtime clicks, types, selects and scrolls until it has something to say.
+
+Most tasks end there: your agent reports the answer, having spent a single turn on the browser.
+
+### 2. Write goals and context that work
+
+This is the highest-leverage thing you control, and the difference between a task costing one
+turn and eleven. If you find yourself being asked a lot of questions, it is almost always this.
+
+**The goal should state the finish line**, not just the subject:
+
+| ❌ | ✅ |
+| --- | --- |
+| "search for flights" | "Find one-way flights from Sydney to Tokyo on 2026-10-10. **Stop when flight options are visible.**" |
+| "sign me up" | "Create an account with the details below. **Stop on the confirmation page**; do not verify the email." |
+
+**The context should carry every value the task implies.** Field names are free-form — the
+runtime matches them to page fields by meaning, so `origin` fills "Where from?" and `surname`
+fills "Last name". Each value you supply is a question you will not be asked:
+
+```json
+{
+  "origin": "Sydney",
+  "destination": "Tokyo",
+  "departure_date": "2026-10-10",
+  "trip_type": "one-way",
+  "passengers": "1",
+  "cabin": "economy"
+}
+```
+
+An unused key costs nothing. A missing one costs a round trip. Nested objects are flattened, so
+`{"traveller": {"last_name": "Lovelace"}}` still reaches a "Surname" field.
+
+> **Secrets:** keys that look sensitive — `password`, `card number`, `otp` — are flagged on
+> arrival. They are typed into their field and nowhere else: never logged, never sent to the
+> policy model, never echoed back to your agent.
+
+### 3. Answer the three things it can ask for
+
+When the runtime stops, it is for one of three reasons. Your agent handles the mechanics; this is
+what is happening and what a good answer looks like.
+
+<details open>
+<summary><b><code>needs_input</code></b> — a field it could not resolve</summary>
+
+```json
+{
+  "status": "needs_input",
+  "request_id": "req_ec1056…",
+  "field": { "label": "How did you hear about us?", "role": "textbox" },
+  "question": "What text should be entered into \"How did you hear about us?\"",
+  "known_keys": ["email", "first name", "last name"]
+}
+```
+
+Reply with the exact string to type, nothing else. It is cached under that field's **meaning**, so
+every synonym of it later resolves for free. `known_keys` shows what the runtime already had —
+useful for spotting a value you forgot to supply.
+
+</details>
+
+<details>
+<summary><b><code>needs_reasoning</code></b> — genuine ambiguity</summary>
+
+```json
+{
+  "status": "needs_reasoning",
+  "reason": "several targets are near-equally plausible (top-two margin 0.01)",
+  "candidate_actions": [
+    { "index": "2", "label": "One way",    "probability": 0.54 },
+    { "index": "1", "label": "Round trip", "probability": 0.39 }
+  ]
+}
+```
+
+You get the page summary and the real alternatives with their probabilities. Answer with one or
+two sentences naming what to do **now** — it steers the next decision only, so a long plan is
+wasted. This is an escape hatch, not a step in normal execution.
+
+</details>
+
+<details>
+<summary><b><code>needs_confirmation</code></b> — something irreversible</summary>
+
+```json
+{
+  "status": "needs_confirmation",
+  "action": "click \"Place order\"",
+  "consequence": "places an order or booking",
+  "question": "\"Place order\" places an order or booking on https://… Approve this action?"
+}
+```
+
+**Nothing has been executed.** The runtime stopped before the click. Approve only if you meant
+for this to happen — approval covers that one action on that one page and does not carry to the
+next one.
+
+</details>
+
+Two more statuses need no answer: `budget_exceeded` just means "call run again, nothing is lost",
+and `blocked` means it cannot proceed.
+
+### 4. Check the verdict before you believe it
+
+`done` is not a claim of success on its own. The runtime re-reads the page and checks the outcome
+itself:
+
+| Verdict | What it means |
+| --- | --- |
+| `verified` | The task's values are on the final page, navigation progressed, no error state. Trust it. |
+| `failed` | A decisive check failed. Something went wrong. |
+| `inconclusive` | Nothing checkable to go on — `host_verification_required` is set. |
+
+When `host_verification_required` is `true`, **look at the page yourself** before reporting
+success. Your agent can call `jev_browser_observe` to read it without acting.
+
+### 5. Try it without a browser or a key
+
+Everything here runs offline against scripted page models:
 
 ```bash
-cargo run -- benchmark --trials 5
-cargo run -- inspect --fixture flights
-cargo run -- mcp --fixture flights    # show an agent the whole flow with nothing installed
+cargo run -- benchmark --trials 5             # the comparison, end to end
+cargo run -- inspect --fixture flights        # exactly what the runtime sees on a page
+cargo run -- mcp --fixture flights            # give an agent the whole flow, no Chrome needed
 ```
 
 ---
 
-## 📖 Usage
+## 🔧 Troubleshooting
+
+Start with `jev-browser-relay doctor` — it checks the key, the daemon and the Chrome connection,
+and prints the fix for whatever is wrong. It never prints your key.
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `doctor` says the daemon is unreachable | Chrome is not exposing remote debugging. Open `chrome://inspect/#remote-debugging` and tick the box. Nothing can click it for you. |
+| Agent shows the server as connected, but every task errors with `config_error` | `TYPESAFE_API_KEY` is not set in the environment your agent launches the server from. The server starts without it on purpose, so you get this message instead of a bare connection failure. |
+| Lots of `needs_input` pauses | Thin `context`. See §2 — the values you supply up front are the questions you avoid. |
+| Lots of `needs_reasoning` pauses | A vague goal, or a genuinely ambiguous site. **Lower** `JEV_RELAY_REASONING_THRESHOLD` (e.g. `0.2`) to escalate less — but each escalation it suppresses is a decision the model said it was unsure about. |
+| `verdict: failed` on a task that looks fine | The task's values were not found on the final page. Read `checks` in the reply — each one says what it looked for. |
+| A second `start` returned `reused: true` | That task was already open, so it resumed instead of stranding the first session behind a stray tab. Pass `force_new` if you really want two. |
+| Stray Chrome tabs after a crash | The next run closes them. Tabs are recorded with the pid that opened them; owner gone means safe to reclaim. |
+
+---
+
+## 📚 Reference
 
 ### MCP tools
 
 Seven stateful tools built around a **task session**, not around clicks. There is deliberately no
-`click` tool — exposing one would put the host straight back into the per-action loop.
+`click` tool — exposing one would put your agent straight back into the per-action loop.
 
 | Tool | Purpose |
 | --- | --- |
@@ -160,9 +297,8 @@ Seven stateful tools built around a **task session**, not around clicks. There i
 | `jev_browser_observe` | Read the page without acting |
 | `jev_browser_stop` | End the session, return the metrics report |
 
-`jev_browser_run` returns one of `done`, `needs_input`, `needs_reasoning`, `needs_confirmation`,
-`blocked`, `budget_exceeded` or `error`. Every reply carries a `next` field saying what to do.
-Keep the `session_id` — answering a pause resumes the task rather than restarting it.
+Every reply carries a `next` field saying what to do. Keep the `session_id` — answering a pause
+resumes the task rather than restarting it.
 
 ### CLI
 
@@ -175,6 +311,10 @@ jev-browser-relay benchmark --trials 5
 jev-browser-relay doctor
 ```
 
+`run` drives one task from the terminal, printing each outcome as JSON and the metrics at the end.
+It pauses exactly as the MCP server does; `--auto-answer` and `--auto-confirm` let it run
+unattended, the latter deliberately off by default.
+
 ### Configuration
 
 Non-secret tuning only; the key is never read from a config file.
@@ -186,7 +326,7 @@ Non-secret tuning only; the key is never read from a config file.
 | `TYPESAFE_ENDPOINT` | `api.typesafe.ai/v1/systemone` | Override the API endpoint |
 | `JEV_RELAY_MAX_STEPS` | `30` | Browser actions per `run` call |
 | `JEV_RELAY_MAX_DURATION_MS` | `60000` | Wall-clock budget per `run` call |
-| `JEV_RELAY_VALUE_THRESHOLD` | `0.6` | Below this, ask the host instead of guessing a field value |
+| `JEV_RELAY_VALUE_THRESHOLD` | `0.6` | Below this, ask instead of guessing a field value |
 | `JEV_RELAY_REASONING_THRESHOLD` | `0.35` | Below this **and** with no front-runner, escalate |
 | `JEV_RELAY_CONSEQUENTIAL_PHRASES` | — | Extra comma-separated phrases to gate |
 | `JEV_RELAY_DISABLE_SAFETY` | — | Set to `1` to disable the confirmation gate |
@@ -195,7 +335,7 @@ Non-secret tuning only; the key is never read from a config file.
 
 ### The Skill
 
-Optional orchestration guidance that teaches a host to use the runtime well — front-load context,
+Optional orchestration guidance that teaches your agent the habits in §2 — front-load context,
 call `run` once, answer only what it asks for.
 
 ```bash
