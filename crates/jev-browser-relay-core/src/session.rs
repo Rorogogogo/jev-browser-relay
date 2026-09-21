@@ -183,6 +183,11 @@ pub struct Session {
     generation: u64,
     action_history: Bounded<ActionRecord>,
     recent_page_states: Bounded<String>,
+    /// Hashes of recently observed page states, for cycle detection.
+    recent_markers: Bounded<u64>,
+    /// How many times a cycle has been reported. The first gets the host a chance to break it;
+    /// a second means guidance did not help.
+    loop_escalations: u32,
 
     pending: Option<Pending>,
     /// Guidance supplied by the host, consumed by the next Jev request.
@@ -239,6 +244,7 @@ impl Session {
         );
 
         let fingerprint = task_fingerprint(&initial_url, &goal);
+        let config_loop_window = config.loop_window.max(4);
         Ok(Self {
             id,
             fingerprint,
@@ -258,6 +264,8 @@ impl Session {
             generation: 1,
             action_history: Bounded::new(MAX_ACTION_HISTORY),
             recent_page_states: Bounded::new(MAX_PAGE_STATES),
+            recent_markers: Bounded::new(config_loop_window),
+            loop_escalations: 0,
             pending: None,
             host_guidance: None,
             approved_action: None,
@@ -524,6 +532,7 @@ impl Session {
         snapshot.generation = self.generation;
         self.value_pool.load_session_facts(&snapshot.url, &snapshot.title, &self.config.today);
         self.recent_page_states.push(snapshot.summary(600));
+        self.recent_markers.push(marker_hash(&snapshot.marker));
         self.snapshot = Some(snapshot.clone());
         Ok(snapshot)
     }
@@ -555,6 +564,25 @@ impl Session {
     /// Does this decision need the host's judgement rather than Jev's?
     ///
     /// This is an escape hatch, not normal execution: only real signals of trouble trigger it.
+    /// Is the page cycling through states it has already been in?
+    fn cycle_reason(&self) -> Option<String> {
+        let window = self.recent_markers.as_slice();
+        // Needs enough history to tell a cycle from ordinary back-and-forth navigation.
+        if (window.len() as u32) < self.config.loop_repeat_threshold * 2 {
+            return None;
+        }
+        let current = *window.last()?;
+        let repeats = window.iter().filter(|marker| **marker == current).count() as u32;
+        if repeats >= self.config.loop_repeat_threshold {
+            return Some(format!(
+                "the page has returned to the same state {repeats} times in the last {} steps; \
+                 the control this task needs may not be reachable from here",
+                window.len()
+            ));
+        }
+        None
+    }
+
     fn ambiguity_reason(&self, decision: &Decision) -> Option<String> {
         if !self.config.reasoning_enabled {
             return None;
@@ -669,6 +697,27 @@ impl Session {
             record.page_changed = Some(changed);
             record.url = fresh.url.clone();
             record.elapsed_ms = self.started_at.elapsed().as_millis() as u64;
+        }
+
+        // A page that keeps returning to a state it has already been in is going nowhere, even
+        // though every individual step "changed" it. This is the shape of a dialog that opens,
+        // offers nothing usable, and gets closed again — observed live on a filter menu whose
+        // only reachable control was "Close dialog", which burned 120 actions before the step
+        // ceiling stopped it. The unchanged-page counter cannot see this, because each open and
+        // each close is a genuine change.
+        // Only when the page actually moved. A page that does not change at all is a different
+        // fault with a more specific diagnosis, and the counter below owns it.
+        if let Some(reason) = changed.then(|| self.cycle_reason()).flatten() {
+            self.loop_escalations += 1;
+            return Ok(StepOutcome::Stopped(
+                if self.loop_escalations > 1 || !self.config.reasoning_enabled {
+                    RunOutcome::Blocked { reason }
+                } else {
+                    let space = ActionSpace::build(&fresh);
+                    let decision_for_candidates = decision.clone();
+                    self.request_reasoning(reason, &fresh, &space, &decision_for_candidates)
+                },
+            ));
         }
 
         // A WAIT that changes nothing is expected; a click that changes nothing is a symptom.
@@ -951,6 +1000,15 @@ impl RawAction {
             ActionKind::Wait => "wait on",
         }
     }
+}
+
+/// A cheap, stable hash of an opaque page marker, so states can be compared without storing
+/// them in full.
+fn marker_hash(marker: &serde_json::Value) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    marker.to_string().hash(&mut hasher);
+    hasher.finish()
 }
 
 fn new_request_id() -> String {

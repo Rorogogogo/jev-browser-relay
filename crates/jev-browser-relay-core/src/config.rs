@@ -35,6 +35,10 @@ pub struct RuntimeConfig {
     pub no_change_reasoning_threshold: u32,
     /// Unchanged-page actions before declaring the session blocked.
     pub no_change_blocked_threshold: u32,
+    /// How many recent page states to remember when looking for a cycle.
+    pub loop_window: usize,
+    /// How often one page state may recur within that window before it counts as a loop.
+    pub loop_repeat_threshold: u32,
 
     // --- safety ---
     pub safety_enabled: bool,
@@ -67,6 +71,8 @@ impl Default for RuntimeConfig {
             reasoning_margin_threshold: 0.05,
             no_change_reasoning_threshold: 3,
             no_change_blocked_threshold: 5,
+            loop_window: 12,
+            loop_repeat_threshold: 3,
             safety_enabled: true,
             extra_consequential_phrases: Vec::new(),
             today: "1970-01-01".into(),

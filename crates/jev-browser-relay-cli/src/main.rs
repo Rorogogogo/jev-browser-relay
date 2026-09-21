@@ -222,7 +222,11 @@ fn load_fixture(name: &str) -> Result<String> {
 async fn make_backend(url: Option<&str>, fixture: Option<&str>) -> Result<Box<dyn BrowserBackend>> {
     match (fixture, url) {
         (Some(name), _) => Ok(Box::new(ScriptedBackend::from_json(&load_fixture(name)?)?)),
-        (None, Some(url)) => Ok(Box::new(HarnessBackend::connect(url, DEFAULT_VIEWPORT).await?)),
+        // A one-shot CLI run holds no other session, so it is idle by definition. Saying so is
+        // what lets it reclaim tabs orphaned by earlier runs and upgrade the browser layer —
+        // `connect` defaults to "not idle" because that is the safe assumption for a caller that
+        // has not thought about it.
+        (None, Some(url)) => Ok(Box::new(HarnessBackend::connect_with(url, DEFAULT_VIEWPORT, true).await?)),
         (None, None) => anyhow::bail!("supply --url for a real browser, or --fixture to run offline"),
     }
 }

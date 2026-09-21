@@ -600,3 +600,71 @@ async fn the_task_context_reaches_the_policy_model_but_secrets_do_not() {
     let encoded = serde_json::to_string(&*requests).unwrap();
     assert!(!encoded.contains("4111111111111111"));
 }
+
+#[tokio::test]
+async fn a_page_cycling_between_two_states_is_caught_quickly() {
+    // Observed live on Google Flights: a filter dialog opened, offered nothing but "Close
+    // dialog", got closed, and was reopened — 120 browser actions and 131 model requests before
+    // the step ceiling stopped it. Every individual step genuinely changed the page, so the
+    // unchanged-page counter never fired.
+    // The docs fixture's home and reference pages link to each other, so alternating between
+    // them is a genuine A→B→A→B cycle in which every step really does change the page.
+    let mut plan = Vec::new();
+    for _ in 0..30 {
+        plan.push(Planned::targeting(Operation::Click, "API reference").with_confidence(0.99));
+        plan.push(Planned::targeting(Operation::Click, "Home").with_confidence(0.99));
+    }
+    let jev = Arc::new(ScriptedJev::new(plan));
+    let mut config = test_config();
+    config.reasoning_enabled = false; // isolate the cycle detector from the reasoning hatch
+    let mut session = session_with(DOCS, "Go round in circles", None, jev, config).await;
+
+    let outcome = session.run(RunBudget { max_steps: 60, max_duration_ms: 30_000 }).await;
+
+    let RunOutcome::Blocked { reason } = &outcome else { panic!("expected Blocked, got {outcome:?}") };
+    assert!(reason.contains("same state"), "{reason}");
+    assert!(
+        session.metrics.browser_actions <= 12,
+        "a cycle must be caught in a handful of steps, not 120; took {}",
+        session.metrics.browser_actions
+    );
+}
+
+#[tokio::test]
+async fn a_cycle_asks_the_host_before_giving_up() {
+    // The host may know how to break out — or may decide the task is good enough without the
+    // step that is stuck.
+    let mut plan = Vec::new();
+    for _ in 0..30 {
+        plan.push(Planned::targeting(Operation::Click, "API reference").with_confidence(0.99));
+        plan.push(Planned::targeting(Operation::Click, "Home").with_confidence(0.99));
+    }
+    let jev = Arc::new(ScriptedJev::new(plan));
+    let mut session = session_with(DOCS, "Go round in circles", None, jev, test_config()).await;
+
+    let outcome = session.run(RunBudget { max_steps: 60, max_duration_ms: 30_000 }).await;
+
+    let RunOutcome::NeedsReasoning { reason, .. } = &outcome else {
+        panic!("expected NeedsReasoning, got {outcome:?}")
+    };
+    assert!(reason.contains("same state"), "{reason}");
+}
+
+#[tokio::test]
+async fn ordinary_back_and_forth_navigation_is_not_a_cycle() {
+    // Visiting a hub page between two guides is normal, not a loop. The detector must not fire
+    // on it, or every menu-driven site becomes unusable.
+    let jev = Arc::new(ScriptedJev::new(vec![
+        Planned::targeting(Operation::Click, "Guides"),
+        Planned::targeting(Operation::Click, "Getting started"),
+        Planned::targeting(Operation::Click, "Next: Deployment"),
+        Planned::targeting(Operation::Click, "Next: Authentication"),
+        Planned::new(Operation::Done),
+    ]));
+    let mut session = session_with(DOCS, "Read the guides in order", None, jev, test_config()).await;
+
+    let outcome = session.run(budget()).await;
+
+    assert!(matches!(outcome, RunOutcome::Done { .. }), "got {outcome:?}");
+    assert_eq!(session.metrics.browser_actions, 4);
+}
